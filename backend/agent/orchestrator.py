@@ -46,14 +46,21 @@ class FeedOpsOrchestrator:
         self.environment = os.getenv("ENVIRONMENT", "sandbox")
         self.session_service = InMemorySessionService()
 
+        self.compiler = ActionsCenterFeedCompiler()
+        self.conversion_sentry_tool = ConversionSentryTool()
+
         self.entity_matcher = self._build_entity_matcher_agent()
         self.schema_auditor = self._build_schema_auditor_agent()
         self.conversion_sentry_agent = self._build_conversion_sentry_agent()
 
         self.entity_matcher_runner = Runner(
-            agent=self.entity_matcher,
-            app_name=self.APP_NAME,
-            session_service=self.session_service,
+            agent=self.entity_matcher, app_name=self.APP_NAME, session_service=self.session_service
+        )
+        self.schema_auditor_runner = Runner(
+            agent=self.schema_auditor, app_name=self.APP_NAME, session_service=self.session_service
+        )
+        self.conversion_sentry_runner = Runner(
+            agent=self.conversion_sentry_agent, app_name=self.APP_NAME, session_service=self.session_service
         )
 
     def _build_entity_matcher_agent(self) -> Agent:
@@ -93,14 +100,16 @@ class FeedOpsOrchestrator:
         return Agent(
             model=GEMINI_MODEL,
             name="schema_auditor_agent",
-            description="Audits compiled Actions Center feed bundles for schema and pricing compliance.",
-            tools=[],
+            description="Compiles and audits Actions Center feed bundles for schema and pricing compliance.",
+            tools=[self.compiler.compile_merchant_feed],
             instruction="""
-            You are the SchemaAuditorAgent in FeedOps AI.
-            1. Ensure all entity, service, action, and menu records conform strictly to Google
-               Actions Center standards.
-            2. Verify prices are rendered in integer micros (e.g. 10000000 = $10.00).
-            3. Audit all action deep-links to guarantee 0% 4xx/5xx HTTP failure rate.
+            You are the SchemaAuditorAgent in FeedOps AI. Given a merchant record and its
+            Places match result, call compile_merchant_feed to produce its Actions Center
+            feed bundle, then report:
+            1. Which feed files were generated (entity/service/action/menu).
+            2. Any compliance risk you notice in the input data (e.g. missing address parts,
+               a price that doesn't look like it's already in micros, a missing phone number).
+            Keep your final answer under 4 sentences.
             """,
         )
 
@@ -109,15 +118,48 @@ class FeedOpsOrchestrator:
         return Agent(
             model=GEMINI_MODEL,
             name="conversion_sentry_agent",
-            description="Monitors rwg_token conversion pings for the sandbox and production environments.",
-            tools=[],
+            description="Dispatches and interprets synthetic rwg_token conversion pings.",
+            tools=[self.conversion_sentry_tool.dispatch_conversion_ping],
             instruction="""
-            You are the ConversionSentryAgent in FeedOps AI.
-            1. Track periodic synthetic conversion POST results from the ConversionSentry tool.
-            2. Ensure error rates stay under 3% across a rolling 7-day window to maintain
-               100% launch eligibility.
+            You are the ConversionSentryAgent in FeedOps AI. Call dispatch_conversion_ping
+            for the environment you're given, then report:
+            1. Whether every token got a 200 response.
+            2. Whether the rolling health log still supports the "3 events / 7 days" check
+               needed to keep launch eligibility, based on the results you receive.
+            Keep your final answer under 4 sentences.
             """,
         )
+
+    async def _run_tool_agent(self, runner: Runner, session_prefix: str, prompt: str):
+        """
+        Runs an ADK agent that has exactly one function tool, and captures both its final
+        narration and the raw return value of whatever tool call it made (if any).
+
+        Returns (narration: str, tool_result: Optional[Any]). tool_result is None both when
+        the agent never called its tool (e.g. it decided not to) and when the Gemini call
+        itself failed (e.g. no/exhausted API key) -- callers should fall back to calling the
+        underlying tool function directly in either case, the same graceful-degradation
+        pattern used for the EntityMatcherAgent.
+        """
+        session_id = f"{session_prefix}-{int(time.time())}"
+        try:
+            await self.session_service.create_session(
+                app_name=self.APP_NAME, user_id="pipeline", session_id=session_id
+            )
+            message = genai_types.Content(role="user", parts=[genai_types.Part(text=prompt)])
+
+            narration = ""
+            tool_result = None
+            async for event in runner.run_async(user_id="pipeline", session_id=session_id, new_message=message):
+                for function_response in event.get_function_responses():
+                    tool_result = function_response.response
+                if event.is_final_response() and event.content and event.content.parts:
+                    narration = event.content.parts[0].text or narration
+
+            return narration, tool_result
+        except Exception as e:
+            logger.warning(f"Agent run '{session_prefix}' failed, falling back to direct tool call: {e}")
+            return f"(agent unavailable: {e})", None
 
     async def _run_entity_matcher_agent(self, merchant_data: Dict[str, Any], match_result: Dict[str, Any]) -> str:
         """
@@ -213,44 +255,68 @@ class FeedOpsOrchestrator:
                 payload={**match_result, "agent_reasoning": agent_reasoning}
             ).model_dump())
 
-        # Step 3: Schema Compilation & Validation
+        # Step 3: Schema Compilation & Validation -- run through the real SchemaAuditorAgent
         yield json.dumps(AgentStreamEvent(
             agent_name="SchemaAuditorAgent",
             stage="schema_compilation",
             status="calling_tool",
-            detail="Compiling Actions Center JSON feeds (Entity, Action, Service, Menu)..."
+            detail="SchemaAuditorAgent compiling Actions Center JSON feeds via Gemini..."
         ).model_dump())
 
-        compiler = ActionsCenterFeedCompiler()
-        feed_bundle = compiler.compile_merchant_feed(merchant_data, match_result)
+        audit_prompt = (
+            f"merchant_data: {json.dumps(merchant_data)}\n"
+            f"match_result: {json.dumps(match_result)}\n"
+            "Compile this merchant's feed bundle and audit it."
+        )
+        audit_narration, feed_bundle = await self._run_tool_agent(
+            self.schema_auditor_runner, f"audit-{merchant_data.get('store_id', 'unknown')}", audit_prompt
+        )
+        agent_unreachable = feed_bundle is None
+        if agent_unreachable:
+            logger.warning("SchemaAuditorAgent didn't call its tool; compiling directly instead.")
+            feed_bundle = self.compiler.compile_merchant_feed(merchant_data, match_result)
 
         yield json.dumps(AgentStreamEvent(
             agent_name="SchemaAuditorAgent",
             stage="schema_compilation",
             status="completed",
-            detail="All schemas validated (0 lint errors, micros pricing formatted).",
-            payload={"files": list(feed_bundle.keys())}
+            detail=(
+                "Feed bundle compiled (SchemaAuditorAgent unavailable, used deterministic compiler)."
+                if agent_unreachable else (audit_narration or "Feed bundle compiled.")
+            ),
+            payload={"files": list(feed_bundle.keys()), "agent_reasoning": audit_narration}
         ).model_dump())
 
-        # Step 4: Synthetic Conversion Verification
+        # Step 4: Synthetic Conversion Verification -- run through the real ConversionSentryAgent
         yield json.dumps(AgentStreamEvent(
             agent_name="ConversionSentryAgent",
             stage="conversion_health",
             status="calling_tool",
-            detail="Dispatching synthetic rwg_token ping to Google Actions Center endpoint..."
+            detail="ConversionSentryAgent dispatching synthetic rwg_token ping via Gemini..."
         ).model_dump())
 
-        sentry = ConversionSentryTool()
-        ping_response = await sentry.dispatch_conversion_ping(self.environment)
+        sentry_prompt = f"environment: {self.environment}\nDispatch the conversion ping and report on health."
+        sentry_narration, ping_response = await self._run_tool_agent(
+            self.conversion_sentry_runner, f"sentry-{merchant_data.get('store_id', 'unknown')}", sentry_prompt
+        )
+        agent_unreachable = ping_response is None
+        if agent_unreachable:
+            logger.warning("ConversionSentryAgent didn't call its tool; pinging directly instead.")
+            ping_response = await self.conversion_sentry_tool.dispatch_conversion_ping(self.environment)
+
         first_result = (ping_response.get("results") or [{}])[0]
+        fallback_detail = (
+            f"Conversion ping verified (Status: {first_result.get('status_code')}, "
+            f"Latency: {first_result.get('latency_ms')}ms)."
+        )
 
         yield json.dumps(AgentStreamEvent(
             agent_name="ConversionSentryAgent",
             stage="conversion_health",
             status="completed",
             detail=(
-                f"Conversion ping verified (Status: {first_result.get('status_code')}, "
-                f"Latency: {first_result.get('latency_ms')}ms)."
+                f"{fallback_detail} (ConversionSentryAgent unavailable, pinged directly.)"
+                if agent_unreachable else (sentry_narration or fallback_detail)
             ),
-            payload=ping_response
+            payload={**ping_response, "agent_reasoning": sentry_narration}
         ).model_dump())
