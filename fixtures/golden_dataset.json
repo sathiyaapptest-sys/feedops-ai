@@ -1,0 +1,187 @@
+{
+  "merchants": [
+    {
+      "id": "1",
+      "name": "Burger King",
+      "status": "Fully Operational",
+      "place_id": "ChIJ_12345",
+      "telephone": "+15550100001",
+      "location": {
+        "latitude": 38.2527,
+        "longitude": -85.7585,
+        "address": {
+          "country": "US",
+          "region": "KY",
+          "locality": "Louisville",
+          "postal_code": "40202",
+          "street_address": "123 BK Street"
+        }
+      },
+      "action_link": "https://burgerking.com/order"
+    },
+    {
+      "id": "2",
+      "name": "Pizza Hut",
+      "status": "Fully Operational",
+      "place_id": "ChIJ_67890",
+      "telephone": "+15550100002",
+      "location": {
+        "latitude": 30.3322,
+        "longitude": -81.6557,
+        "address": {
+          "country": "US",
+          "region": "FL",
+          "locality": "Jacksonville",
+          "postal_code": "32202",
+          "street_address": "456 Pizza Ave"
+        }
+      },
+      "action_link": "https://pizzahut.com/order"
+    },
+    {
+      "id": "3",
+      "name": "Subway",
+      "status": "Fully Operational",
+      "place_id": "ChIJ_11111",
+      "telephone": "+15550100003",
+      "location": {
+        "latitude": 40.7128,
+        "longitude": -74.0060,
+        "address": {
+          "country": "US",
+          "region": "NY",
+          "locality": "New York",
+          "postal_code": "10001",
+          "street_address": "789 Sub Way"
+        }
+      },
+      "action_link": "https://subway.com/order"
+    },
+    {
+      "id": "4",
+      "name": "Taco Bell",
+      "status": "Fully Operational",
+      "place_id": "ChIJ_22222",
+      "telephone": "+15550100004",
+      "location": {
+        "latitude": 34.0522,
+        "longitude": -118.2437,
+        "unstructured_address": "Los Angeles, CA 90001, US"
+      },
+      "action_link": "https://tacobell.com/order"
+    },
+    {
+      "id": "5",
+      "name": "Wendy's",
+      "status": "Fully Operational",
+      "place_id": "ChIJ_33333",
+      "telephone": "+15550100005",
+      "location": {
+        "latitude": 39.9612,
+        "longitude": -82.9988,
+        "unstructured_address": "Columbus, OH 43215, US"
+      },
+      "action_link": "https://wendys.com/order"
+    },
+    {
+      "id": "6",
+      "name": "KFC",
+      "status": "Fully Operational",
+      "place_id": "ChIJ_44444",
+      "telephone": "+15550100006",
+      "location": {
+        "latitude": 36.1627,
+        "longitude": -86.7816,
+        "unstructured_address": "Nashville, TN 37201, US"
+      },
+      "action_link": "https://kfc.com/order"
+    },
+    {
+      "id": "7",
+      "name": "McDonald's",
+      "status": "Fully Operational",
+      "place_id": "ChIJ_55555",
+      "telephone": "+15550100007",
+      "location": {
+        "latitude": 41.8781,
+        "longitude": -87.6298,
+        "unstructured_address": "Chicago, IL 60601, US"
+      },
+      "action_link": "https://mcdonalds.com/order"
+    },
+    {
+      "id": "8",
+      "name": "Domino's Pizza",
+      "status": "Fully Operational",
+      "place_id": "ChIJ_66666",
+      "telephone": "+15550100008",
+      "location": {
+        "latitude": 42.3314,
+        "longitude": -83.0458,
+        "unstructured_address": "Detroit, MI 48226, US"
+      },
+      "action_link": "https://dominos.com/order"
+    },
+    {
+      "id": "9",
+      "name": "Starbucks",
+      "status": "Fully Operational",
+      "place_id": "ChIJ_77777",
+      "telephone": "+15550100009",
+      "location": {
+        "latitude": 47.6062,
+        "longitude": -122.3321,
+        "unstructured_address": "Seattle, WA 98101, US"
+      },
+      "action_link": "https://starbucks.com/order"
+    },
+    {
+      "id": "10",
+      "name": "Spice Haven Bistro",
+      "status": "Unindexed Edge Case",
+      "place_id": null,
+      "telephone": "+15550100010",
+      "location": {
+        "latitude": 30.2672,
+        "longitude": -97.7431,
+        "address": {
+          "country": "US",
+          "region": "TX",
+          "locality": "Austin",
+          "postal_code": "78701",
+          "street_address": "901 Spice Lane"
+        }
+      },
+      "action_link": "https://spicehaven.com/order",
+      "notes": "No Google Place ID found; triggers automatic Google Business Profile drafting + drag-and-drop pin workflow."
+    },
+    {
+      "id": "11",
+      "name": "Corner Cafe",
+      "status": "Ambiguous Match Edge Case",
+      "place_id": "ChIJ_88888",
+      "match_confidence": 0.74,
+      "telephone": "+15550100011",
+      "location": {
+        "latitude": 39.7392,
+        "longitude": -104.9903,
+        "unstructured_address": "Denver, CO 80202, US"
+      },
+      "action_link": "https://cornercafe.com/order",
+      "notes": "Match confidence score 0.74; triggers HITL Triage Queue card."
+    },
+    {
+      "id": "12",
+      "name": "Pasta Express",
+      "status": "Schema Discrepancy Edge Case",
+      "place_id": "ChIJ_99999",
+      "telephone": "+15550100012",
+      "location": {
+        "latitude": 29.7604,
+        "longitude": -95.3698,
+        "unstructured_address": "Houston, TX 77002, US"
+      },
+      "notes": "Missing required action_link query token; agent autonomously lints and repairs it."
+    }
+  ]
+}

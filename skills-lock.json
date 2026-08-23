@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "google-maps-platform": {
+      "source": "googlemaps/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/google-maps-platform/SKILL.md",
+      "computedHash": "f4092ad152c96dc15dc7bb8e91f2c78522c3a13282efb5b02e3ce21ecc172c48"
+    }
+  }
+}
