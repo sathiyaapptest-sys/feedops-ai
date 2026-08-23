@@ -1,4 +1,7 @@
-from mcp.server.fastmcp import FastMCP
+import json
+# mcp>=2.0 renamed the high-level server helper from mcp.server.fastmcp.FastMCP
+# to mcp.server.mcpserver.MCPServer; aliased here so the rest of this file is unchanged.
+from mcp.server.mcpserver import MCPServer as FastMCP
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
 
@@ -49,7 +52,8 @@ def verify_storefront(store_image_path: str, streetview_image_path: str) -> Dict
 @mcp.tool()
 def generate_gbp_record(merchant_name: str, address: str) -> str:
     """Drafts a missing Google Business Profile record to unblock matching."""
-    return generate_gbp_draft(merchant_name, address)
+    draft = generate_gbp_draft({"name": merchant_name, "address": address})
+    return json.dumps(draft)
 
 @mcp.tool()
 def extract_menu_from_image(file_path: str) -> str:
