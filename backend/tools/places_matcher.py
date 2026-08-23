@@ -1,8 +1,13 @@
 import os
+import re
+import difflib
 import httpx
 from typing import Dict, Any, Optional
 from google import genai
 from google.genai import types
+
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+
 
 class GooglePlacesClient:
     def __init__(self, api_key: Optional[str] = None):
@@ -16,7 +21,7 @@ class GooglePlacesClient:
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.api_key,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.regularOpeningHours,places.businessStatus"
+            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.regularOpeningHours,places.businessStatus,places.internationalPhoneNumber"
         }
         
         payload = {
@@ -29,17 +34,94 @@ class GooglePlacesClient:
             return response.json()
             
     def _mock_search_places(self, query: str) -> Dict[str, Any]:
+        if query == "ChIJieatS2VjUzoRcxdYOKeD2mw":
+            return {
+                "places": [
+                    {
+                        "id": "ChIJieatS2VjUzoRcxdYOKeD2mw",
+                        "displayName": {"text": "THE SPOT"},
+                        "formattedAddress": "37, Dumas St, White Town, Puducherry 605001",
+                        "internationalPhoneNumber": "+91 98765 43210",
+                        "location": {"latitude": 11.9314, "longitude": 79.8339},
+                        "businessStatus": "OPERATIONAL",
+                        "regularOpeningHours": {
+                            "periods": [
+                                {"open": {"day": 1, "hour": 10, "minute": 0}, "close": {"day": 1, "hour": 22, "minute": 30}},
+                                {"open": {"day": 2, "hour": 10, "minute": 0}, "close": {"day": 2, "hour": 22, "minute": 30}},
+                                {"open": {"day": 3, "hour": 10, "minute": 0}, "close": {"day": 3, "hour": 22, "minute": 30}},
+                                {"open": {"day": 4, "hour": 10, "minute": 0}, "close": {"day": 4, "hour": 22, "minute": 30}},
+                                {"open": {"day": 5, "hour": 10, "minute": 0}, "close": {"day": 5, "hour": 22, "minute": 30}},
+                                {"open": {"day": 6, "hour": 10, "minute": 0}, "close": {"day": 6, "hour": 22, "minute": 30}},
+                                {"open": {"day": 0, "hour": 10, "minute": 0}, "close": {"day": 0, "hour": 22, "minute": 30}}
+                            ]
+                        }
+                    }
+                ]
+            }
+
         return {
             "places": [
                 {
-                    "id": "ChIJN1t_tDeuEmsRUsoyG83frY4",
+                    "id": "ChIJN1t_tDeuEmsRUsoyG83frY4" if query != "test" else "test",
                     "displayName": {"text": f"Mock Place for {query}"},
                     "formattedAddress": "123 Mock St, Mock City",
+                    "internationalPhoneNumber": "+1 555-123-4567",
                     "location": {"latitude": 37.422, "longitude": -122.084},
-                    "businessStatus": "OPERATIONAL"
+                    "businessStatus": "OPERATIONAL",
+                    "regularOpeningHours": {
+                        "periods": [
+                            {"open": {"day": 1, "hour": 9, "minute": 0}, "close": {"day": 1, "hour": 22, "minute": 0}},
+                            {"open": {"day": 2, "hour": 9, "minute": 0}, "close": {"day": 2, "hour": 22, "minute": 0}},
+                            {"open": {"day": 3, "hour": 9, "minute": 0}, "close": {"day": 3, "hour": 22, "minute": 0}},
+                            {"open": {"day": 4, "hour": 9, "minute": 0}, "close": {"day": 4, "hour": 22, "minute": 0}},
+                            {"open": {"day": 5, "hour": 9, "minute": 0}, "close": {"day": 5, "hour": 23, "minute": 0}},
+                            {"open": {"day": 6, "hour": 10, "minute": 0}, "close": {"day": 6, "hour": 23, "minute": 0}}
+                        ]
+                    }
                 }
             ]
         }
+
+def _name_similarity(a: str, b: str) -> float:
+    normalize = lambda s: re.sub(r"[^a-z0-9 ]", "", (s or "").lower()).strip()
+    return difflib.SequenceMatcher(None, normalize(a), normalize(b)).ratio()
+
+
+async def resolve_entity_match(name: str, address: str) -> Dict[str, Any]:
+    """
+    Resolves a merchant name+address against Google Places and scores confidence by
+    comparing the input against the top candidate's name and address.
+
+    This is a lightweight baseline heuristic (string similarity), not Google's own
+    internal entity-matching algorithm -- treat the confidence score as indicative,
+    not authoritative, and route low/zero-confidence results to human review or a
+    Google Business Profile draft rather than trusting it blindly.
+    """
+    client = GooglePlacesClient()
+    result = await client.search_places(f"{name} {address}".strip())
+    candidates = result.get("places", [])
+    if not candidates:
+        return {"confidence": 0.0, "place_id": None, "candidate": None}
+
+    top = candidates[0]
+    candidate_name = top.get("displayName", {}).get("text", "")
+    candidate_address = top.get("formattedAddress", "")
+
+    confidence = round(
+        (_name_similarity(name, candidate_name) * 0.7)
+        + (_name_similarity(address, candidate_address) * 0.3),
+        2,
+    )
+
+    return {
+        "confidence": confidence,
+        "place_id": top.get("id"),
+        "name": candidate_name,
+        "address": candidate_address,
+        "business_status": top.get("businessStatus"),
+        "candidate": top,
+    }
+
 
 def verify_storefront_multimodal(store_image_path: str, streetview_image_path: str) -> Dict[str, Any]:
     client = genai.Client()
@@ -59,7 +141,7 @@ def verify_storefront_multimodal(store_image_path: str, streetview_image_path: s
         )
         
         response = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model=GEMINI_MODEL,
             contents=[store_file, street_file, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",

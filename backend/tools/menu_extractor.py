@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+
 class MenuItem(BaseModel):
     name: str = Field(description="Name of the menu item")
     description: Optional[str] = Field(None, description="Description of the item")
@@ -46,7 +48,7 @@ class ImageMenuExtractor:
         """
         
         response = self.client.models.generate_content(
-            model='gemini-3.6-flash',
+            model=GEMINI_MODEL,
             contents=[
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
                 prompt

@@ -12,8 +12,18 @@ from backend.tools.menu_extractor import ImageMenuExtractor
 from backend.tools.excel_parser import SpreadsheetFeedParser
 from backend.tools.places_matcher import GooglePlacesClient
 from backend.server.auth import get_current_user
+from backend.agent.orchestrator import FeedOpsOrchestrator
 
 app = FastAPI(title="FeedOps AI Backend")
+
+_orchestrator: FeedOpsOrchestrator | None = None
+
+
+def get_orchestrator() -> FeedOpsOrchestrator:
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = FeedOpsOrchestrator()
+    return _orchestrator
 
 # Enable CORS for Vite dev server
 app.add_middleware(
@@ -26,16 +36,14 @@ app.add_middleware(
 
 @app.post("/api/merchants/onboard")
 async def onboard_merchant(request: Request, current_user: dict = Depends(get_current_user)):
-    """Accepts menu upload + merchant metadata, kicks off EntityMatcherAgent, and streams reasoning steps."""
+    """Accepts merchant metadata, runs the real FeedOps agent pipeline, and streams its progress."""
+    merchant_data = await request.json()
+    orchestrator = get_orchestrator()
+
     async def event_generator():
-        yield "data: {\"step\": \"Extracting metadata from menu\"}\n\n"
-        await asyncio.sleep(0.5)
-        yield "data: {\"step\": \"Kicking off EntityMatcherAgent\"}\n\n"
-        await asyncio.sleep(0.5)
-        yield "data: {\"step\": \"Resolving entities\"}\n\n"
-        await asyncio.sleep(0.5)
-        yield "data: {\"step\": \"Complete\"}\n\n"
-    
+        async for event_json in orchestrator.execute_onboarding_pipeline(merchant_data):
+            yield f"data: {event_json}\n\n"
+
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get("/api/agent/stream")

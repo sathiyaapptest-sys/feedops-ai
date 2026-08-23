@@ -1,13 +1,26 @@
 import json
 import os
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 
 class ActionsCenterFeedCompiler:
     def __init__(self, output_dir: str = "feeds_output"):
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
-        
+
+    def compile_merchant_feed(
+        self, merchant_data: Dict[str, Any], match_result: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, str]:
+        """Compiles a single merchant's feed bundle, folding in its Places match result."""
+        merged = dict(merchant_data)
+        if match_result:
+            if match_result.get("place_id"):
+                merged["place_id"] = match_result["place_id"]
+            candidate = match_result.get("candidate") or {}
+            if candidate.get("location"):
+                merged["geo"] = candidate["location"]
+        return self.compile_feeds([merged])
+
     def compile_feeds(self, merchant_data_list: List[Dict[str, Any]]) -> Dict[str, str]:
         """
         Compiles staged merchant data into official Google Actions Center monolithic JSON files.
