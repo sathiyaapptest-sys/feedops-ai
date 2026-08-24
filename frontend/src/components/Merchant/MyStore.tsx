@@ -60,6 +60,41 @@ export function MyStore() {
     setTimings(newTimings);
   };
 
+  const applyPlaceData = (place: any) => {
+    if (place.displayName?.text) setStoreName(place.displayName.text);
+    if (place.formattedAddress) setAddress(place.formattedAddress);
+    if (place.internationalPhoneNumber) setPhone(place.internationalPhoneNumber);
+    
+    if (place.regularOpeningHours?.periods) {
+      const newTimings = [
+        { day: 'Monday', isOpen: false, openTime: '09:00', closeTime: '22:00' },
+        { day: 'Tuesday', isOpen: false, openTime: '09:00', closeTime: '22:00' },
+        { day: 'Wednesday', isOpen: false, openTime: '09:00', closeTime: '22:00' },
+        { day: 'Thursday', isOpen: false, openTime: '09:00', closeTime: '22:00' },
+        { day: 'Friday', isOpen: false, openTime: '09:00', closeTime: '22:00' },
+        { day: 'Saturday', isOpen: false, openTime: '09:00', closeTime: '22:00' },
+        { day: 'Sunday', isOpen: false, openTime: '09:00', closeTime: '22:00' },
+      ];
+      
+      place.regularOpeningHours.periods.forEach((period: any) => {
+        if (period.open && period.close) {
+          const dayIndex = period.open.day; // 0 is Sunday
+          const mappedIndex = dayIndex === 0 ? 6 : dayIndex - 1;
+          
+          const openHour = (period.open.hour || 0).toString().padStart(2, '0');
+          const openMin = (period.open.minute || 0).toString().padStart(2, '0');
+          const closeHour = (period.close.hour || 0).toString().padStart(2, '0');
+          const closeMin = (period.close.minute || 0).toString().padStart(2, '0');
+          
+          newTimings[mappedIndex].isOpen = true;
+          newTimings[mappedIndex].openTime = `${openHour}:${openMin}`;
+          newTimings[mappedIndex].closeTime = `${closeHour}:${closeMin}`;
+        }
+      });
+      setTimings(newTimings);
+    }
+  };
+
   const handleFetchByPlaceId = async () => {
     if (!placeIdInput) return;
     setFetching(true);
@@ -68,8 +103,7 @@ export function MyStore() {
       const res = await api.searchPlaces(placeIdInput);
       if (res.status === 'success' && res.data.places && res.data.places.length > 0) {
         const place = res.data.places[0];
-        setStoreName(place.displayName?.text || '');
-        setAddress(place.formattedAddress || '');
+        applyPlaceData(place);
         setMessage({type: 'success', text: 'Place details fetched successfully.'});
       } else {
         setMessage({type: 'error', text: 'No place found with this ID.'});
@@ -90,7 +124,7 @@ export function MyStore() {
       if (res.status === 'success' && res.data.places && res.data.places.length > 0) {
         const place = res.data.places[0];
         setPlaceIdInput(place.id || '');
-        setStoreName(place.displayName?.text || storeName);
+        applyPlaceData(place);
         setMessage({type: 'success', text: 'Place matched based on address!'});
       } else {
         setMessage({type: 'info', text: 'No Google Profile found for this address. We recommend creating a Google Business Profile.'});
