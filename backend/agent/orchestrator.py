@@ -6,6 +6,7 @@ Coordinates a multi-agent hierarchy using Google ADK (google-adk) and Gemini.
 import os
 import json
 import time
+import asyncio
 import logging
 from typing import Dict, Any, AsyncGenerator, Optional
 from pydantic import BaseModel
@@ -19,6 +20,10 @@ from google.genai import types as genai_types
 from backend.tools.places_matcher import resolve_entity_match, generate_gbp_draft
 from backend.tools.feed_compiler import ActionsCenterFeedCompiler
 from backend.tools.conversion_sentry import ConversionSentryTool
+from backend.db.firestore_client import (
+    MerchantRepository, STATUS_MATCHED, STATUS_NEEDS_REVIEW, STATUS_NO_LISTING,
+)
+from backend.rag.playbook_index import retrieve_playbook_context
 
 logger = logging.getLogger("feedops.orchestrator")
 logger.setLevel(logging.INFO)
@@ -52,6 +57,7 @@ class FeedOpsOrchestrator:
         self.entity_matcher = self._build_entity_matcher_agent()
         self.schema_auditor = self._build_schema_auditor_agent()
         self.conversion_sentry_agent = self._build_conversion_sentry_agent()
+        self.support_agent = self._build_support_agent()
 
         self.entity_matcher_runner = Runner(
             agent=self.entity_matcher, app_name=self.APP_NAME, session_service=self.session_service
@@ -61,6 +67,9 @@ class FeedOpsOrchestrator:
         )
         self.conversion_sentry_runner = Runner(
             agent=self.conversion_sentry_agent, app_name=self.APP_NAME, session_service=self.session_service
+        )
+        self.support_runner = Runner(
+            agent=self.support_agent, app_name=self.APP_NAME, session_service=self.session_service
         )
 
     def _build_entity_matcher_agent(self) -> Agent:
@@ -101,15 +110,21 @@ class FeedOpsOrchestrator:
             model=GEMINI_MODEL,
             name="schema_auditor_agent",
             description="Compiles and audits Actions Center feed bundles for schema and pricing compliance.",
-            tools=[self.compiler.compile_merchant_feed],
+            tools=[self.compiler.compile_merchant_feed, retrieve_playbook_context],
             instruction="""
             You are the SchemaAuditorAgent in FeedOps AI. Given a merchant record and its
-            Places match result, call compile_merchant_feed to produce its Actions Center
-            feed bundle, then report:
-            1. Which feed files were generated (entity/service/action/menu).
-            2. Any compliance risk you notice in the input data (e.g. missing address parts,
-               a price that doesn't look like it's already in micros, a missing phone number).
-            Keep your final answer under 4 sentences.
+            Places match result:
+            1. Call retrieve_playbook_context with a short query describing what you're
+               about to audit (e.g. "entity feed required fields") to ground your review
+               in the real Actions Center spec, not assumptions.
+            2. Call compile_merchant_feed to produce the feed bundle.
+            3. Report which feed files were generated, and any compliance risk you notice
+               (missing address parts, a price that doesn't look like it's already in
+               micros, a missing phone number) -- citing the retrieved playbook section
+               when a rule you flag came from it.
+            If retrieve_playbook_context returns nothing, say so and audit from your own
+            knowledge instead of pretending you found a rule. Keep your final answer under
+            5 sentences.
             """,
         )
 
@@ -130,16 +145,50 @@ class FeedOpsOrchestrator:
             """,
         )
 
+    def _build_support_agent(self) -> Agent:
+        """
+        "Ask FeedOps" -- answers ops/aggregator questions (portal errors, conversion
+        status codes, launch-review gotchas) grounded in the real playbook via RAG,
+        instead of a canned FAQ.
+        """
+        return Agent(
+            model=GEMINI_MODEL,
+            name="feedops_support_agent",
+            description="Answers questions about the Google Actions Center integration, grounded in the real playbook.",
+            tools=[retrieve_playbook_context],
+            instruction="""
+            You are the FeedOps Support Agent. Always call retrieve_playbook_context with
+            the user's question (or a short paraphrase of it) first, before answering.
+            Answer using only what the retrieved context actually says. Name which section
+            you drew from. If nothing relevant comes back, say plainly that the playbook
+            doesn't cover this rather than guessing. Keep your answer under 6 sentences.
+            """,
+        )
+
+    async def ask_support(self, question: str) -> Dict[str, Any]:
+        """Runs the FeedOps Support Agent for one question. Returns the agent's answer plus
+        the playbook section(s) it retrieved and cited, so the caller can show its sources."""
+        narration, tool_results = await self._run_tool_agent(
+            self.support_runner, "support", question
+        )
+        retrieved = tool_results.get("retrieve_playbook_context")
+        # Non-dict tool returns are wrapped by ADK as {'result': <value>}.
+        sources = (retrieved or {}).get("result", []) if isinstance(retrieved, dict) else []
+        return {"answer": narration, "sources": sources}
+
     async def _run_tool_agent(self, runner: Runner, session_prefix: str, prompt: str):
         """
-        Runs an ADK agent that has exactly one function tool, and captures both its final
-        narration and the raw return value of whatever tool call it made (if any).
+        Runs an ADK agent through a real session, and captures both its final narration
+        and the raw return value of every tool call it made, keyed by tool name -- an
+        agent may hold more than one function tool (e.g. SchemaAuditorAgent has both
+        compile_merchant_feed and retrieve_playbook_context), and keying by name avoids
+        one tool's result silently clobbering another's if the model calls both.
 
-        Returns (narration: str, tool_result: Optional[Any]). tool_result is None both when
-        the agent never called its tool (e.g. it decided not to) and when the Gemini call
-        itself failed (e.g. no/exhausted API key) -- callers should fall back to calling the
-        underlying tool function directly in either case, the same graceful-degradation
-        pattern used for the EntityMatcherAgent.
+        Returns (narration: str, tool_results: Dict[str, Any]). tool_results is {} both
+        when the agent never called any tool and when the Gemini call itself failed (e.g.
+        no/exhausted API key) -- callers should fall back to calling the underlying tool
+        function directly in either case, the same graceful-degradation pattern used for
+        the EntityMatcherAgent.
         """
         session_id = f"{session_prefix}-{int(time.time())}"
         try:
@@ -149,17 +198,17 @@ class FeedOpsOrchestrator:
             message = genai_types.Content(role="user", parts=[genai_types.Part(text=prompt)])
 
             narration = ""
-            tool_result = None
+            tool_results: Dict[str, Any] = {}
             async for event in runner.run_async(user_id="pipeline", session_id=session_id, new_message=message):
                 for function_response in event.get_function_responses():
-                    tool_result = function_response.response
+                    tool_results[function_response.name] = function_response.response
                 if event.is_final_response() and event.content and event.content.parts:
                     narration = event.content.parts[0].text or narration
 
-            return narration, tool_result
+            return narration, tool_results
         except Exception as e:
             logger.warning(f"Agent run '{session_prefix}' failed, falling back to direct tool call: {e}")
-            return f"(agent unavailable: {e})", None
+            return f"(agent unavailable: {e})", {}
 
     async def _run_entity_matcher_agent(self, merchant_data: Dict[str, Any], match_result: Dict[str, Any]) -> str:
         """
@@ -195,6 +244,36 @@ class FeedOpsOrchestrator:
             logger.warning(f"EntityMatcherAgent run failed, continuing with deterministic result only: {e}")
             return f"(EntityMatcherAgent unavailable: {e})"
 
+    async def _persist_merchant(self, merchant_data: Dict[str, Any], match_result: Dict[str, Any], status: str) -> None:
+        """
+        Best-effort write-through to Firestore so the triage queue and readiness
+        scorecard reflect real onboarding runs. Never blocks or fails the SSE
+        pipeline -- a merchant who fails to persist can still be re-onboarded.
+        """
+        store_id = merchant_data.get("store_id")
+        if not store_id:
+            logger.warning("No store_id on merchant_data; skipping Firestore persistence for this run.")
+            return
+
+        record = {
+            "store_id": store_id,
+            "name": merchant_data.get("name"),
+            "address": merchant_data.get("address"),
+            "status": status,
+        }
+        if match_result.get("place_id"):
+            record["place_id"] = match_result["place_id"]
+        if match_result.get("confidence") is not None:
+            record["confidence"] = match_result["confidence"]
+
+        def _write():
+            MerchantRepository().upsert(record)
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception as e:
+            logger.warning(f"Could not persist merchant '{store_id}' to Firestore: {e}")
+
     async def execute_onboarding_pipeline(self, merchant_data: Dict[str, Any]) -> AsyncGenerator[str, None]:
         """
         Executes the full asynchronous onboarding lifecycle, streaming progress events
@@ -225,6 +304,14 @@ class FeedOpsOrchestrator:
         ).model_dump())
 
         agent_reasoning = await self._run_entity_matcher_agent(merchant_data, match_result)
+
+        if confidence >= 0.90:
+            match_status = STATUS_MATCHED
+        elif confidence > 0.0:
+            match_status = STATUS_NEEDS_REVIEW
+        else:
+            match_status = STATUS_NO_LISTING
+        await self._persist_merchant(merchant_data, match_result, match_status)
 
         if confidence < 0.90 and confidence > 0.0:
             yield json.dumps(AgentStreamEvent(
@@ -266,14 +353,16 @@ class FeedOpsOrchestrator:
         audit_prompt = (
             f"merchant_data: {json.dumps(merchant_data)}\n"
             f"match_result: {json.dumps(match_result)}\n"
-            "Compile this merchant's feed bundle and audit it."
+            "First retrieve any relevant playbook rules, then compile this merchant's "
+            "feed bundle and audit it."
         )
-        audit_narration, feed_bundle = await self._run_tool_agent(
+        audit_narration, tool_results = await self._run_tool_agent(
             self.schema_auditor_runner, f"audit-{merchant_data.get('store_id', 'unknown')}", audit_prompt
         )
+        feed_bundle = tool_results.get("compile_merchant_feed")
         agent_unreachable = feed_bundle is None
         if agent_unreachable:
-            logger.warning("SchemaAuditorAgent didn't call its tool; compiling directly instead.")
+            logger.warning("SchemaAuditorAgent didn't call compile_merchant_feed; compiling directly instead.")
             feed_bundle = self.compiler.compile_merchant_feed(merchant_data, match_result)
 
         yield json.dumps(AgentStreamEvent(
@@ -296,9 +385,10 @@ class FeedOpsOrchestrator:
         ).model_dump())
 
         sentry_prompt = f"environment: {self.environment}\nDispatch the conversion ping and report on health."
-        sentry_narration, ping_response = await self._run_tool_agent(
+        sentry_narration, tool_results = await self._run_tool_agent(
             self.conversion_sentry_runner, f"sentry-{merchant_data.get('store_id', 'unknown')}", sentry_prompt
         )
+        ping_response = tool_results.get("dispatch_conversion_ping")
         agent_unreachable = ping_response is None
         if agent_unreachable:
             logger.warning("ConversionSentryAgent didn't call its tool; pinging directly instead.")

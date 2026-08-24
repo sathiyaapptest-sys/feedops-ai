@@ -33,6 +33,7 @@ from backend.tools.feed_compiler import ActionsCenterFeedCompiler
 from backend.tools.places_matcher import resolve_entity_match
 from backend.tools.sftp_uploader import GoogleSFTPClient
 from backend.tools.conversion_sentry import ConversionSentryTool
+from backend.db.firestore_client import MerchantRepository, STATUS_MATCHED, STATUS_EXCLUDED_CLOSED
 
 logger = logging.getLogger("feedops.jobs")
 logging.basicConfig(level=logging.INFO)
@@ -50,12 +51,27 @@ CLOSED_EXCLUSION_CONFIDENCE_THRESHOLD = 0.85
 CLOSED_STATUSES = {"CLOSED_TEMPORARILY", "CLOSED_PERMANENTLY"}
 
 
-def _load_merchant_snapshot(path: str = DEFAULT_SNAPSHOT_PATH) -> List[Dict[str, Any]]:
+def _load_merchants(path: str = DEFAULT_SNAPSHOT_PATH) -> List[Dict[str, Any]]:
     """
-    Loads the current merchant list to feed today. Falls back to the last known-good
-    snapshot on disk if the real data source isn't reachable -- this file *is* that
-    fallback for now, until real Firestore-backed merchant storage exists.
+    Loads the current merchant list to feed today. Tries Firestore (the live data
+    source) first; falls back to the last known-good JSON snapshot on disk if
+    Firestore is unreachable or unconfigured -- matches the playbook's own guidance
+    (section 6): regenerate from live data when reachable, otherwise re-package the
+    last known-good data rather than skip the day's run entirely.
     """
+    try:
+        merchants = MerchantRepository().list_active()
+        if merchants:
+            logger.info(f"Loaded {len(merchants)} active merchant(s) from Firestore.")
+            return merchants
+        logger.warning("Firestore returned no active merchants; falling back to JSON snapshot.")
+    except Exception as e:
+        logger.warning(f"Firestore unreachable ({e}); falling back to JSON snapshot.")
+
+    return _load_from_json_snapshot(path)
+
+
+def _load_from_json_snapshot(path: str = DEFAULT_SNAPSHOT_PATH) -> List[Dict[str, Any]]:
     with open(path, "r") as f:
         raw = json.load(f)["merchants"]
 
@@ -108,7 +124,23 @@ def _apply_closed_merchant_guard(
         else:
             kept.append({**merchant, "match_result": match})
 
+    _persist_guard_results(kept, excluded)
     return kept, excluded
+
+
+def _persist_guard_results(kept: List[Dict[str, Any]], excluded: List[Dict[str, Any]]) -> None:
+    """Best-effort: reflects the guard's decisions back to Firestore for the ops UI.
+    Never lets a Firestore write failure block the actual feed push."""
+    try:
+        repo = MerchantRepository()
+        for m in excluded:
+            repo.update_status(m["store_id"], STATUS_EXCLUDED_CLOSED, extra={"exclude_reason": m["exclude_reason"]})
+        for m in kept:
+            match = m.get("match_result") or {}
+            if match.get("place_id"):
+                repo.update_status(m["store_id"], STATUS_MATCHED, extra={"place_id": match["place_id"]})
+    except Exception as e:
+        logger.warning(f"Could not persist closed-merchant guard results to Firestore: {e}")
 
 
 def _append_exclude_list(excluded: List[Dict[str, Any]], path: str = EXCLUDE_LIST_PATH) -> None:
@@ -133,10 +165,10 @@ def _sftp_client_for(environment: str) -> GoogleSFTPClient:
 
 
 def run_daily_feed_push(environment: str = "sandbox", snapshot_path: str = DEFAULT_SNAPSHOT_PATH) -> Dict[str, Any]:
-    """Regenerates the feed bundle from the current merchant snapshot and uploads it."""
+    """Regenerates the feed bundle from the current merchant data and uploads it."""
     logger.info(f"Starting daily feed push ({environment})...")
 
-    merchants = _load_merchant_snapshot(snapshot_path)
+    merchants = _load_merchants(snapshot_path)
     kept, excluded = _apply_closed_merchant_guard(merchants)
     _append_exclude_list(excluded)
 

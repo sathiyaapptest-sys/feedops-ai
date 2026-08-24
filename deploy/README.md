@@ -1,3 +1,40 @@
+# Persistence, RAG, and scheduled jobs
+
+## Firestore merchant data + playbook RAG index
+
+Merchant records live in Firestore (`backend/db/firestore_client.py`,
+collection `merchants`). Seed it from the golden dataset:
+
+```bash
+python -m fixtures.seed_firestore
+```
+
+The SchemaAuditorAgent and the "Ask FeedOps" support endpoint
+(`POST /api/support/ask`) ground themselves in the real
+[GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md](../GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md)
+via Firestore vector search (`backend/rag/playbook_index.py`, collection
+`playbook_chunks`) instead of a hardcoded prompt summary. Build that index
+once, and again whenever the playbook doc changes:
+
+```bash
+python -m fixtures.seed_playbook_index
+```
+
+**Before that will actually retrieve anything**, create the vector index
+`find_nearest()` needs on the `embedding` field -- without it, retrieval
+fails with `FailedPrecondition` (the error message includes a direct link to
+create it, or run this ahead of time):
+
+```bash
+gcloud firestore indexes composite create \
+  --collection-group=playbook_chunks \
+  --query-scope=COLLECTION \
+  --field-config=vector-config='{"dimension":"768","flat":"{}"}',field-path=embedding
+```
+
+(768 matches `GEMINI_EMBEDDING_DIMENSION`'s default in `playbook_index.py` --
+keep them in sync if you change one.)
+
 # Scheduled jobs: Cloud Run Jobs + Cloud Scheduler
 
 Two recurring jobs `backend/jobs/scheduled_tasks.py` implements, per
