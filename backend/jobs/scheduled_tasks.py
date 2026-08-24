@@ -16,9 +16,14 @@ deploy/README.md), not as a long-running server. Each function returns a
 plain dict summary; the CLI entrypoint below exits non-zero on failure so
 Cloud Scheduler / Cloud Run Job retries and alerts correctly.
 
-NOTE: feed_compiler.py still emits a schema.org-shaped bundle, not the real
-Actions Center proto shape documented in the playbook. This job will upload
-the wrong feed shape until that's fixed -- tracked separately, not fixed here.
+Every daily push is recorded as an upload_batches document (see
+backend.db.firestore_client.UploadBatchRepository) so there's a real history
+of what was uploaded and when, and a place for a human to record the one
+thing this job structurally cannot verify itself: whether Google's Partner
+Portal actually shows the batch as accepted (playbook section 6 -- a clean
+SFTP put only proves delivery, not acceptance, and there's no API for that
+check). This module never calls the Partner Portal; it only tracks what a
+human reports after checking it themselves.
 """
 
 import argparse
@@ -33,7 +38,9 @@ from backend.tools.feed_compiler import ActionsCenterFeedCompiler
 from backend.tools.places_matcher import resolve_entity_match
 from backend.tools.sftp_uploader import GoogleSFTPClient
 from backend.tools.conversion_sentry import ConversionSentryTool
-from backend.db.firestore_client import MerchantRepository, STATUS_MATCHED, STATUS_EXCLUDED_CLOSED
+from backend.db.firestore_client import (
+    MerchantRepository, STATUS_MATCHED, STATUS_EXCLUDED_CLOSED, UploadBatchRepository,
+)
 
 logger = logging.getLogger("feedops.jobs")
 logging.basicConfig(level=logging.INFO)
@@ -194,16 +201,37 @@ def run_daily_feed_push(environment: str = "sandbox", snapshot_path: str = DEFAU
 
     sftp = _sftp_client_for(environment)
     upload_result = sftp.upload_feeds(list(feed_bundle.values()))
+    ok = upload_result.get("status") == "success"
+
+    now = datetime.now(timezone.utc)
+    batch_id = f"{environment}-{int(now.timestamp())}"
+    batch_record = None
+    try:
+        batch_record = UploadBatchRepository().create({
+            "batch_id": batch_id,
+            "environment": environment,
+            "merchant_ids": [m["id"] for m in merged],
+            "merchant_count": len(merged),
+            "excluded_count": len(excluded),
+            "feed_files": list(feed_bundle.values()),
+            "upload_status": upload_result.get("status"),
+            "dry_run": sftp.dry_run,
+        })
+    except Exception as e:
+        logger.warning(f"Could not record upload batch '{batch_id}' to Firestore: {e}")
 
     summary = {
+        "batch_id": batch_id,
         "environment": environment,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now.isoformat(),
         "merchants_in_snapshot": len(merchants),
         "merchants_excluded": len(excluded),
         "merchants_pushed": len(merged),
         "feed_files": list(feed_bundle.values()),
         "upload": upload_result,
-        "ok": upload_result.get("status") == "success",
+        "ok": ok,
+        "needs_portal_verification": ok and not sftp.dry_run,
+        "batch_recorded": batch_record is not None,
     }
     logger.info(f"Daily feed push finished: {summary}")
     return summary

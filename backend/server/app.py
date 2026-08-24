@@ -19,6 +19,7 @@ from backend.agent.orchestrator import FeedOpsOrchestrator
 from backend.db.firestore_client import (
     MerchantRepository, STATUS_NEEDS_REVIEW, STATUS_APPROVED, STATUS_REJECTED,
     OrganizationRepository, ORG_TYPE_MERCHANT, ORG_TYPE_AGGREGATOR, PORTAL_STATUS_NOT_STARTED,
+    UploadBatchRepository, VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS,
 )
 from backend.jobs.scheduled_tasks import run_daily_feed_push
 
@@ -175,6 +176,52 @@ async def trigger_pipeline():
     # inside FastAPI's already-running event loop.
     summary = await asyncio.to_thread(run_daily_feed_push, "sandbox")
     return summary
+
+class BatchVerifyIn(BaseModel):
+    status: str  # "confirmed_clean" | "flagged_errors"
+    notes: Optional[str] = None
+
+@app.get("/api/batches")
+async def list_batches(pending_only: bool = False):
+    """Upload batch history. pending_only=true returns batches still awaiting a
+    human's manual Partner Portal -> Ingestion -> History check."""
+    try:
+        repo = UploadBatchRepository()
+        batches = repo.list_pending_verification() if pending_only else repo.list_all()
+        return {"batches": batches}
+    except Exception as e:
+        return {"batches": [], "error": str(e)}
+
+@app.get("/api/batches/{batch_id}")
+async def get_batch(batch_id: str):
+    try:
+        batch = UploadBatchRepository().get(batch_id)
+        if not batch:
+            return {"status": "error", "message": "Batch not found."}
+        return {"status": "ok", "batch": batch}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/batches/{batch_id}/verify")
+async def verify_batch(batch_id: str, payload: BatchVerifyIn, current_user: dict = Depends(get_current_user)):
+    """
+    Records a human's self-reported result of manually checking Partner Portal ->
+    Ingestion -> History for this batch. This endpoint makes NO call to Google --
+    there is no API for "was this feed accepted," only the portal's own UI
+    (playbook section 6). It exists to record what a person saw there, not to
+    check it for them.
+    """
+    if payload.status not in (VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS):
+        return {
+            "status": "error",
+            "message": f"status must be '{VERIFICATION_CONFIRMED_CLEAN}' or '{VERIFICATION_FLAGGED_ERRORS}'.",
+        }
+    try:
+        verified_by = current_user.get("email") or current_user.get("uid", "unknown")
+        UploadBatchRepository().mark_verified(batch_id, payload.status, verified_by, payload.notes)
+        return {"status": "recorded", "batch_id": batch_id, "verification_status": payload.status}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/support/ask")
 async def ask_support(request: Request):
