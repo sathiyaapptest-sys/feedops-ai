@@ -1,19 +1,25 @@
-from fastapi import FastAPI, Request, UploadFile, File, Depends
+from fastapi import FastAPI, Request, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import asyncio
 import os
+import uuid
+from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
 import shutil
 import tempfile
+from pydantic import BaseModel
 from backend.tools.menu_extractor import ImageMenuExtractor
 from backend.tools.excel_parser import SpreadsheetFeedParser
 from backend.tools.places_matcher import GooglePlacesClient
 from backend.server.auth import get_current_user
 from backend.agent.orchestrator import FeedOpsOrchestrator
-from backend.db.firestore_client import MerchantRepository, STATUS_NEEDS_REVIEW, STATUS_APPROVED, STATUS_REJECTED
+from backend.db.firestore_client import (
+    MerchantRepository, STATUS_NEEDS_REVIEW, STATUS_APPROVED, STATUS_REJECTED,
+    OrganizationRepository, ORG_TYPE_MERCHANT, ORG_TYPE_AGGREGATOR, PORTAL_STATUS_NOT_STARTED,
+)
 from backend.jobs.scheduled_tasks import run_daily_feed_push
 
 app = FastAPI(title="FeedOps AI Backend")
@@ -35,6 +41,71 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class OrganizationIn(BaseModel):
+    org_id: Optional[str] = None
+    org_type: str  # "merchant" | "aggregator"
+    name: str
+    contact_email: str
+    goal: str  # free text: what they want to achieve (visibility only? conversion tracking too?)
+
+
+class OrganizationConfigIn(BaseModel):
+    sftp_username_sandbox: Optional[str] = None
+    sftp_username_production: Optional[str] = None
+    conversion_partner_id: Optional[str] = None
+    portal_status_sandbox: Optional[str] = None
+    portal_status_production: Optional[str] = None
+
+
+@app.post("/api/organizations")
+async def create_organization(payload: OrganizationIn, current_user: dict = Depends(get_current_user)):
+    """Onboarding intake: who's using FeedOps AI and what they're trying to achieve,
+    before any merchant data processing starts."""
+    if payload.org_type not in (ORG_TYPE_MERCHANT, ORG_TYPE_AGGREGATOR):
+        return {"status": "error", "message": f"org_type must be '{ORG_TYPE_MERCHANT}' or '{ORG_TYPE_AGGREGATOR}'."}
+
+    org = {
+        "org_id": payload.org_id or uuid.uuid4().hex[:12],
+        "org_type": payload.org_type,
+        "name": payload.name,
+        "contact_email": payload.contact_email,
+        "goal": payload.goal,
+        "portal_status": {"sandbox": PORTAL_STATUS_NOT_STARTED, "production": PORTAL_STATUS_NOT_STARTED},
+        "config": {},
+    }
+    try:
+        OrganizationRepository().create(org)
+        return {"status": "created", "org": org}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/organizations/{org_id}")
+async def get_organization(org_id: str, current_user: dict = Depends(get_current_user)):
+    try:
+        org = OrganizationRepository().get(org_id)
+        if not org:
+            return {"status": "error", "message": "Organization not found."}
+        return {"status": "ok", "org": org}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.patch("/api/organizations/{org_id}/config")
+async def update_organization_config(
+    org_id: str, payload: OrganizationConfigIn, current_user: dict = Depends(get_current_user)
+):
+    """Captures the Partner Portal values FeedOps AI actually needs (SFTP username,
+    numeric conversion partner ID, per-environment setup status) -- see the
+    walkthrough guide for where to find these in the portal."""
+    config = {k: v for k, v in payload.model_dump().items() if v is not None}
+    try:
+        OrganizationRepository().update_config(org_id, config)
+        return {"status": "updated", "config": config}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 
 @app.post("/api/merchants/onboard")
 async def onboard_merchant(request: Request, current_user: dict = Depends(get_current_user)):
@@ -142,25 +213,33 @@ async def upload_menu_image(file: UploadFile = File(...)):
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/upload/spreadsheet")
-async def upload_spreadsheet(file: UploadFile = File(...)):
-    """Accepts multipart/form-data Excel/CSV and populates the merchant batch."""
+async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str] = Form(None)):
+    """
+    Accepts multipart/form-data Excel/CSV and populates the merchant batch.
+
+    With org_id: loads that organization's saved column-mapping adapter (remembered
+    from a previous upload) or infers and saves one, and rows that fail required-field
+    validation come back in `errors` instead of being silently dropped or guessed at.
+    """
     try:
         fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
         with os.fdopen(fd, 'wb') as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
+
         parser = SpreadsheetFeedParser()
-        data = parser.parse(temp_path)
+        data = parser.parse(temp_path, org_id=org_id)
         os.remove(temp_path)
-        
+
         # Serialize objects to dicts for JSON response
         merchants = [m.model_dump() for m in data["merchants"]]
         menus = [m.model_dump() for m in data["menus"]]
-        
+
         return {
-            "status": "success", 
-            "merchants_count": len(merchants), 
+            "status": "success",
+            "merchants_count": len(merchants),
             "menus_count": len(menus),
+            "errors": data["errors"],
+            "adapter": data["adapter"],
             "data": {
                 "merchants": merchants,
                 "menus": menus
