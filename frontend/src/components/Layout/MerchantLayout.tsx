@@ -1,7 +1,7 @@
 import { Outlet, useNavigate, NavLink } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth } from '../../lib/firebase';
-import { LogOut, Store, Menu } from 'lucide-react';
+import { LogOut, Store, Menu, Sparkles, HelpCircle } from 'lucide-react';
 
 export default function MerchantLayout() {
   const navigate = useNavigate();
@@ -20,8 +20,15 @@ export default function MerchantLayout() {
         </div>
         
         <nav className="flex-1 p-4 space-y-2">
-          <NavLink 
-            to="/merchant/store" 
+          <NavLink
+            to="/merchant/onboard"
+            className={({ isActive }) => `flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors ${isActive ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-medium' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
+          >
+            <Sparkles className="w-5 h-5" />
+            <span>Onboard Store</span>
+          </NavLink>
+          <NavLink
+            to="/merchant/store"
             className={({ isActive }) => `flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors ${isActive ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-medium' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
           >
             <Store className="w-5 h-5" />
@@ -40,6 +47,13 @@ export default function MerchantLayout() {
           >
             <Menu className="w-5 h-5" />
             <span>Services</span>
+          </NavLink>
+          <NavLink
+            to="/merchant/ask"
+            className={({ isActive }) => `flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors ${isActive ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-medium' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
+          >
+            <HelpCircle className="w-5 h-5" />
+            <span>Ask FeedOps</span>
           </NavLink>
         </nav>
 

@@ -19,14 +19,14 @@ export function Menu() {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [menuStatus, setMenuStatus] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         try {
-          const menuRef = doc(db, 'menus', user.uid);
+          const menuRef = doc(db, 'menus', user.email || user.uid);
           const menuSnap = await getDoc(menuRef);
           if (menuSnap.exists()) {
             const data = menuSnap.data();
@@ -110,7 +110,7 @@ export function Menu() {
         // Auto-save to database
         if (auth.currentUser) {
           try {
-            const menuRef = doc(db, 'menus', auth.currentUser.uid);
+            const menuRef = doc(db, 'menus', auth.currentUser.email || auth.currentUser.uid);
             await setDoc(menuRef, {
               items: parsedItems,
               status: 'draft',
@@ -168,7 +168,7 @@ export function Menu() {
     setSaving(true);
     setSuccess(null);
     try {
-      const menuRef = doc(db, 'menus', auth.currentUser.uid);
+      const menuRef = doc(db, 'menus', auth.currentUser.email || auth.currentUser.uid);
       await setDoc(menuRef, {
         items: menuItems,
         status: 'published',
