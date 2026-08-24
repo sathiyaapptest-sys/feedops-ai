@@ -1,4 +1,51 @@
-# Persistence, RAG, and scheduled jobs
+# Deploying FeedOps AI
+
+## Web service (Cloud Run) -- start here
+
+The root `Dockerfile` builds the FastAPI backend (`backend/server/app.py`) as
+a standard Cloud Run service. Built and run-tested locally with real Docker
+before this was written down: the image builds clean, serves `/docs` and
+every API route, degrades gracefully with no credentials mounted (returns a
+clear JSON error instead of crashing), and shuts down cleanly on SIGTERM in
+under a second. Not yet deployed to a real GCP project -- that needs your
+own authenticated `gcloud` session, which nothing in this repo can do for you.
+
+```bash
+export PROJECT_ID=your-gcp-project
+export REGION=us-central1
+
+# One command: builds via Cloud Build, pushes, deploys, and prints a live URL.
+gcloud run deploy feedops-ai-backend \
+  --source . \
+  --region=$REGION \
+  --allow-unauthenticated \
+  --service-account=feedops-run@$PROJECT_ID.iam.gserviceaccount.com \
+  --set-secrets="GEMINI_API_KEY=gemini-api-key:latest" \
+  --set-env-vars="ENVIRONMENT=sandbox"
+```
+
+The service account needs `roles/datastore.user` (Firestore reads/writes via
+Application Default Credentials -- no key file needed, same pattern as
+everywhere else in this codebase) and, once you're ready, whatever
+permissions the Places/Conversion API keys require:
+
+```bash
+gcloud iam service-accounts create feedops-run
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:feedops-run@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/datastore.user"
+```
+
+`--allow-unauthenticated` makes the service reachable at its Cloud Run URL
+without a Google-managed auth layer in front -- the app's own sensitive
+routes still require a Firebase ID token via `get_current_user`, so this
+doesn't expose merchant-write operations, only makes the service network-
+reachable at all (needed for a judge to actually open the URL).
+
+**Proof of running on Google Cloud** (the hackathon's explicit requirement):
+after deploying, `gcloud run services logs read feedops-ai-backend
+--region=$REGION` and the Cloud Run console page for the service are your
+evidence -- screenshot or link both in the submission.
 
 ## Firestore merchant data + playbook RAG index
 
@@ -59,8 +106,14 @@ export REPO=feedops-ai
 
 gcloud artifacts repositories create $REPO --repository-format=docker --location=$REGION
 
-# Build and push the image (from the repo root, where the Dockerfile lives)
-gcloud builds submit --tag $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/scheduled-tasks:latest .
+# Jobs use a separate Dockerfile (deploy/Dockerfile.jobs) from the web
+# service's root Dockerfile, so this builds via the small Cloud Build config
+# that points at it rather than the default `gcloud builds submit --tag`
+# (which only ever looks at ./Dockerfile).
+gcloud builds submit \
+  --config=deploy/cloudbuild.jobs.yaml \
+  --substitutions=_IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/scheduled-tasks:latest \
+  .
 ```
 
 Put secrets (`GEMINI_API_KEY`, `GOOGLE_PLACES_API_KEY`, `GOOGLE_SFTP_KEY_PATH`
