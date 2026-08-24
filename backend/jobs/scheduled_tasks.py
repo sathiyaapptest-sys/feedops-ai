@@ -178,7 +178,13 @@ def run_daily_feed_push(environment: str = "sandbox", snapshot_path: str = DEFAU
     compiler = ActionsCenterFeedCompiler()
     merged = []
     for m in kept:
-        row = {"name": m["name"], "address": m["address"], "id": m["store_id"]}
+        row = {
+            "name": m["name"],
+            "address": m["address"],
+            "id": m["store_id"],
+            "telephone": m.get("telephone"),
+            "action_link": m.get("action_link"),
+        }
         match = m.get("match_result") or {}
         if match.get("place_id"):
             row["place_id"] = match["place_id"]

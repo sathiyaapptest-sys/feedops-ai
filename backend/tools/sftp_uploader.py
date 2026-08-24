@@ -27,7 +27,15 @@ class GoogleSFTPClient:
     def upload_feeds(self, feed_files: List[str], max_retries: int = 3) -> Dict[str, Any]:
         """
         Uploads timestamped feed bundles with retry logic and directory validation.
+
+        Descriptors (*.filesetdesc.json) are uploaded before data files, per
+        GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md section 6's `mput` order -- Google's
+        ingestion reads descriptors first, so this ordering is required, not
+        cosmetic. Sorted here (stable) regardless of what order the caller built
+        its file list in.
         """
+        feed_files = sorted(feed_files, key=lambda p: 0 if p.endswith(".filesetdesc.json") else 1)
+
         if self.dry_run:
             logger.info("Dry run mode: Skipping actual SFTP upload.")
             return {

@@ -129,13 +129,24 @@ gcloud scheduler jobs create http feedops-weekly-sweep-trigger \
 `0 9 * * 1` = every Monday at 9:00 AM. Both comfortably clear Google's "3
 events / 7 days" and daily-cadence requirements with room for a retry.
 
-## Known gap this doesn't fix
+## Required config for the weekly sweep
 
-`backend/tools/conversion_sentry.py` still points at placeholder
-`https://example.com/api/conversion/...` URLs, not Google's real
-`https://www.google.com/maps/conversion/{debug/}collect` endpoints -- the
-weekly sweep will run on schedule but won't actually satisfy Google's check
-until that's fixed. Same for `feed_compiler.py`'s feed shape (schema.org
-JSON-LD instead of the real Actions Center proto format) -- the daily push
-will upload feeds, but Google's validator will reject them until that's fixed.
-Both are tracked as separate, not-yet-picked follow-up work.
+`conversion_sentry.py` now posts to Google's real conversion endpoints and
+requires two env vars before it'll do anything but raise a clear error:
+
+- `GOOGLE_CONVERSION_PARTNER_ID` -- the numeric Partner/Aggregator ID from
+  Partner Portal -> Account and Users -> Account tab. **Not** your SFTP
+  username -- sending that instead is the single most common mistake here
+  (playbook section 7).
+- `GOOGLE_SANDBOX_TEST_TOKENS` -- comma-separated, the 3 real sandbox test
+  tokens Google gives you per test merchant in the portal's own
+  conversion-tracking setup instructions. Defaults to placeholder values that
+  will correctly get rejected until you set this.
+
+## Remaining known gap
+
+The daily push only compiles entity + action feeds (the required pair per
+the playbook -- "it's fine to ship those two first and add service later").
+The service feed needs per-merchant lead_time / opening hours / delivery-area
+data that doesn't exist in the current intake; that's queued as part of the
+onboarding-intake work, not fixed here.
