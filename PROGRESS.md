@@ -1,0 +1,113 @@
+# FeedOps AI — Progress & Reference
+
+Internal engineering reference tracking what's been built, verified, and left
+open. Not the hackathon-facing README (that's still to be written) — this is
+for picking the project back up quickly, in this session or a future one.
+
+**Hackathon**: [All Things Agentic](https://allthingsagentichackathon.devpost.com)
+— category **Taskmaster**, deadline **Aug 31, 2026 5pm PT**. Judged on
+Innovation & Operational Utility (40%), Architectural Discipline & Tech Stack
+(30%), Demo & Production Readiness (30%). Mandatory tech: Gemini 3.5+, a
+Google agent framework (using ADK), a GCP infra service (using Firestore +
+Cloud Run).
+
+## What FeedOps AI is
+
+Automates the operational grind of Google Actions Center's Ordering Redirect
+integration (see [GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md](GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md)
+for the full domain spec this project targets): merchant entity matching
+against Google Places, Actions Center feed compilation, SFTP upload, and
+conversion-tracking health checks — normally a manual, error-prone daily
+grind for restaurant aggregators.
+
+## Architecture (all real, all verified — not a mockup)
+
+- **4 Google ADK agents** (`backend/agent/orchestrator.py`): EntityMatcher
+  (judges Places match confidence, grounds ambiguous ones via Google Search),
+  SchemaAuditor (compiles + audits feeds, grounded in the real playbook via
+  RAG), ConversionSentry (dispatches + interprets conversion pings),
+  Support (the "Ask FeedOps" surface). Each runs through a real
+  `google.adk.runners.Runner`, with deterministic Python fallback if the
+  agent call fails — verified live with a real Gemini key.
+- **Firestore** (`backend/db/firestore_client.py`): `MerchantRepository`,
+  `OrganizationRepository`, `UploadBatchRepository`. System of record for
+  merchant status, org config/adapters, and upload history.
+- **RAG** (`backend/rag/playbook_index.py`): chunks the playbook by section,
+  embeds with Gemini, retrieves via Firestore vector search. Grounds
+  SchemaAuditor and the Support agent.
+- **Scheduled jobs** (`backend/jobs/scheduled_tasks.py`): daily feed push
+  (closed-merchant guard + compile + SFTP upload) and weekly conversion
+  sweep, deployable as Cloud Run Jobs on Cloud Scheduler crons
+  (`deploy/README.md`).
+- **Data adapters** (`backend/tools/data_adapter.py`): per-organization
+  column-mapping, saved and reused, with structured per-row validation
+  errors instead of silent guessing.
+- **Frontend**: React/Vite, wired to the real backend for onboarding (live
+  SSE agent stream) and Ask FeedOps. Firebase Auth-gated.
+
+## Commit-by-commit history (see `git log` for full messages)
+
+1. `fbff6fb` — initial scaffold (inherited, largely non-functional at start)
+2. `e905d63` — replaced a fabricated `google.antigravity` import with real
+   Google ADK; fixed 3 broken cross-module call signatures
+3. `8631037` — wired all 3 agents through real ADK Runners (previously only
+   1 of 3 actually called Gemini)
+4. `d8e1140` — daily feed push + weekly conversion sweep as Cloud Run Jobs
+5. `1d4dccc` — Firestore merchant persistence + playbook RAG grounding
+6. `95b9f88` — fixed conversion tracking (real Google endpoints, was
+   posting to placeholder URLs) and feed compiler (real Actions Center
+   proto shape, was emitting schema.org JSON-LD)
+7. `46a2cdc` — organization onboarding intake + per-org data adapters
+8. `e75e4ec` — upload batch history + human-only Portal verification loop
+   (no automated Google Console calls — none exist to make)
+9. `82f95a6` — Cloud Run web service deployment (Dockerfile split from jobs)
+10. `3f22608` — wired frontend to the real backend (live onboarding pipeline,
+    Ask FeedOps)
+11. `83faff1` — fixed `GEMINI_MODEL` default (`gemini-flash-latest` alias
+    was timing out; `gemini-3.6-flash` works reliably)
+
+## Known gaps (honest, not hidden)
+
+- **`BulkUpload.tsx` swallows validation errors.** The backend correctly
+  returns per-row errors from the data-adapter validation; the component
+  only shows a success count. Found during testing, not yet fixed.
+- **`Menu.tsx`'s XLSX-upload path expects the wrong response shape** from
+  `/api/upload/spreadsheet` (expects `.menu`/`.sections`, actual shape is
+  `{merchants, menus}`) — pre-existing, not introduced this session.
+- **Services page's live agent stream is still canned** (`/api/agent/stream`
+  was never wired to the real pipeline) — the onboarding page's stream is
+  real; this one, deliberately left out of scope, is not.
+- **No architecture diagram, no hackathon-facing README, no demo video, no
+  pushed remote repo yet** — deliberately held until the flow is fully
+  tested and stable (current phase).
+- Firestore vector index for RAG retrieval needs to be created manually in
+  the real GCP project (`deploy/README.md` has the exact command) — nothing
+  retrieves until it exists.
+
+## Environment notes for next time
+
+- **Gemini model**: use `gemini-3.6-flash` explicitly, not the
+  `gemini-flash-latest` alias (confirmed unreliable — 504s). Google's own
+  API told us this when `gemini-2.5-flash` 404'd as deprecated.
+- **Free tier rate limits are real** — running several agent calls back to
+  back (e.g. rapid manual testing) will trip per-minute quota. Not a bug;
+  space out calls or expect occasional graceful fallback under quota.
+- **`.env` holds `GEMINI_API_KEY`** (gitignored, never committed) — currently
+  a free-tier key on its own GCP project (not the original Prepay-billed one
+  that was depleted).
+- No `gcloud` CLI, no GCP credentials, no running Docker daemon by default
+  in a fresh sandboxed session — Docker Desktop can be started with
+  `open -a Docker` and works once up (verified this session); `gcloud`
+  deploys need to be run by the account holder.
+- Dev servers: backend `python run.py` (port 8000, needs `.venv` +
+  `.env` sourced); frontend via `.claude/launch.json`'s `frontend` config
+  (port 5173) or `npm --prefix frontend run dev`.
+
+## Next steps (in the order agreed)
+
+1. ~~Deploy prep~~ ✓ / ~~Frontend wiring~~ ✓ / **current: confirm the flow is
+   fully stable** (fix or accept the two known frontend gaps above)
+2. README + architecture diagram
+3. Demo video (max 4 min per Devpost rules)
+4. Push to a real remote, grant repo access to `testing@devpost.com` and
+   `cloudhackathons@google.com`
