@@ -13,23 +13,17 @@ export default function Login() {
   const [error, setError] = useState('');
   const navigate = useNavigate();
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const DEMO_ROUTES: Record<string, string> = {
+    'demo@aggregator.com': '/aggregator/dashboard',
+    'demo@merchant.com': '/merchant/store',
+  };
+
+  const attemptLogin = async (loginEmail: string, loginPassword: string) => {
     setLoading(true);
     setError('');
 
     try {
-      // Bypass Firebase for demo accounts
-      if (email === 'demo@aggregator.com') {
-        navigate('/aggregator/dashboard');
-        return;
-      }
-      if (email === 'demo@merchant.com') {
-        navigate('/merchant/store');
-        return;
-      }
-
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const userCredential = await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
       const user = userCredential.user;
 
       // Fetch role from Firestore
@@ -45,14 +39,33 @@ export default function Login() {
         } else {
           setError('Unknown role assigned to user.');
         }
+      } else if (DEMO_ROUTES[loginEmail]) {
+        // No Firestore role doc for this demo user, but they authenticated fine --
+        // route by the well-known demo email rather than blocking on missing setup.
+        navigate(DEMO_ROUTES[loginEmail]);
       } else {
         setError('User profile not found in database.');
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to login');
+      // Real sign-in failed. For the two well-known demo accounts, fall back to an
+      // unauthenticated preview -- lets you click around the UI without having
+      // created those Firebase users yet. Note: auth-protected calls (e.g. the
+      // merchant onboarding pipeline) will still 401 in this fallback path; create
+      // the real demo@merchant.com / demo@aggregator.com accounts (password:
+      // "password") in your Firebase project for those to actually work.
+      if (DEMO_ROUTES[loginEmail]) {
+        navigate(DEMO_ROUTES[loginEmail]);
+      } else {
+        setError(err.message || 'Failed to login');
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    attemptLogin(email, password);
   };
 
   return (
@@ -116,14 +129,14 @@ export default function Login() {
         </form>
 
         <div className="mt-8 pt-6 border-t border-slate-200 dark:border-slate-700">
-          <p className="text-sm text-center text-slate-500 mb-4">Or bypass login for demo purposes</p>
+          <p className="text-sm text-center text-slate-500 mb-4">Or sign in with a demo account</p>
           <div className="flex space-x-4">
             <button
               type="button"
               onClick={() => {
                 setEmail('demo@merchant.com');
                 setPassword('password');
-                navigate('/merchant/store');
+                attemptLogin('demo@merchant.com', 'password');
               }}
               className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium transition-colors"
             >
@@ -134,7 +147,7 @@ export default function Login() {
               onClick={() => {
                 setEmail('demo@aggregator.com');
                 setPassword('password');
-                navigate('/aggregator/dashboard');
+                attemptLogin('demo@aggregator.com', 'password');
               }}
               className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium transition-colors"
             >

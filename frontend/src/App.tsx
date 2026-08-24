@@ -8,6 +8,9 @@ import { BulkUpload } from './components/Aggregator/BulkUpload';
 import { MyStore } from './components/Merchant/MyStore';
 import { Menu } from './components/Merchant/Menu';
 import { Services } from './components/Merchant/Services';
+import { StoreView } from './components/Customer/StoreView';
+import { MerchantOnboardingCard } from './components/MerchantOnboardingCard';
+import { AskFeedOps } from './components/AskFeedOps';
 
 function App() {
   return (
@@ -15,6 +18,9 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="/login" element={<Login />} />
+        
+        {/* Public Routes */}
+        <Route path="/store/:storeId" element={<StoreView />} />
         
         {/* Protected Routes (Aggregator) */}
         <Route path="/aggregator" element={<AggregatorLayout />}>
@@ -35,6 +41,8 @@ function App() {
           <Route path="store" element={<MyStore />} />
           <Route path="menu" element={<Menu />} />
           <Route path="services" element={<Services />} />
+          <Route path="onboard" element={<MerchantOnboardingCard />} />
+          <Route path="ask" element={<AskFeedOps />} />
         </Route>
       </Routes>
     </BrowserRouter>
