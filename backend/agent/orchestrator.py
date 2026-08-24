@@ -28,7 +28,7 @@ from backend.rag.playbook_index import retrieve_playbook_context
 logger = logging.getLogger("feedops.orchestrator")
 logger.setLevel(logging.INFO)
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 
 class AgentStreamEvent(BaseModel):
