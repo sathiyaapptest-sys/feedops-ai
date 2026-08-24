@@ -62,6 +62,31 @@ export const api = {
     });
     return res.json();
   },
+  /** Upload batch history -- one record per daily feed push, the closest thing
+   * to Google's own Portal "Ingestion -> History" view we can show without an
+   * API for it (there isn't one). */
+  getBatches: async (): Promise<{ batches: any[] }> => {
+    const res = await fetch(`${API_BASE_URL}/api/batches`);
+    return res.json();
+  },
+  /** Records a human's self-reported result of manually checking Partner
+   * Portal -> Ingestion -> History for one batch. Auth-protected. */
+  verifyBatch: async (
+    batchId: string,
+    status: 'confirmed_clean' | 'flagged_errors',
+    notes?: string
+  ): Promise<{ status: string; batch_id?: string; verification_status?: string; message?: string }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/batches/${encodeURIComponent(batchId)}/verify`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ status, notes }),
+    });
+    return res.json();
+  },
   uploadMenuImage: async (file: File) => {
     const formData = new FormData();
     formData.append('file', file);
