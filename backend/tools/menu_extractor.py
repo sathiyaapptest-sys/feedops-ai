@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 class MenuItem(BaseModel):
     name: str = Field(description="Name of the menu item")
