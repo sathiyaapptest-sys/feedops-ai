@@ -191,6 +191,13 @@ def run_daily_feed_push(environment: str = "sandbox", snapshot_path: str = DEFAU
             "id": m["store_id"],
             "telephone": m.get("telephone"),
             "action_link": m.get("action_link"),
+            # Carried through so the service feed (lead time + hours) can be
+            # compiled for merchants that have real data on file -- see
+            # feed_compiler.py's _build_service_rows, which omits a merchant
+            # from the service feed entirely rather than invent either.
+            "service_types": m.get("service_types"),
+            "opening_hours": m.get("opening_hours"),
+            "lead_time_minutes": m.get("lead_time_minutes"),
         }
         match = m.get("match_result") or {}
         if match.get("place_id"):

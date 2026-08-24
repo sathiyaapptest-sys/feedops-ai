@@ -47,9 +47,31 @@ export function BulkUpload() {
         </label>
       </div>
 
-      {result && (
-        <div className="mt-4 p-4 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 rounded-lg text-sm">
-          Successfully processed {result.merchants_count} merchants and {result.menus_count} menus.
+      {result && result.status === 'error' && (
+        <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 rounded-lg text-sm">
+          {result.message || 'Upload failed.'}
+        </div>
+      )}
+
+      {result && result.status !== 'error' && (
+        <div className="mt-4 space-y-3">
+          <div className="p-4 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 rounded-lg text-sm">
+            Parsed {result.merchants_count} merchant{result.merchants_count === 1 ? '' : 's'} and {result.menus_count} menu item{result.menus_count === 1 ? '' : 's'} --
+            {' '}{result.persisted_count ?? 0} saved to the triage queue / readiness scorecard / daily feed push.
+          </div>
+
+          {result.errors && result.errors.length > 0 && (
+            <div className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 rounded-lg text-sm">
+              <p className="font-medium mb-2">{result.errors.length} row{result.errors.length === 1 ? '' : 's'} skipped -- not saved:</p>
+              <ul className="space-y-1 max-h-40 overflow-y-auto">
+                {result.errors.map((err: any, i: number) => (
+                  <li key={i} className="text-xs">
+                    {err.row_index === -1 ? 'File' : `Row ${err.row_index + 1}`}: <span className="font-mono">{err.field}</span> -- {err.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
     </div>

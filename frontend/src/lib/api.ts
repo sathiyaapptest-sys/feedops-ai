@@ -118,4 +118,38 @@ export const api = {
     });
     return res.json();
   },
+  /** Reads the merchant's own record from the `merchants` collection -- the
+   * system of record the daily feed push compiles from, distinct from the
+   * `stores` collection MyStore.tsx also writes for its own display. */
+  getMerchantProfile: async (): Promise<{ status: string; profile?: any; message?: string }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/merchants/profile`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
+  /** Saves the merchant's profile (name/address/phone/hours/lead time/service
+   * types) into `merchants`, so it actually reaches the entity/action/service
+   * feeds instead of sitting only in `stores`. Auth-protected. */
+  saveMerchantProfile: async (profile: {
+    storeName: string;
+    address: string;
+    phone?: string;
+    email?: string;
+    placeId?: string;
+    serviceOptions?: { delivery: boolean; takeaway: boolean; inStore: boolean };
+    timings?: Array<{ day: string; isOpen: boolean; openTime: string; closeTime: string }>;
+    leadTimeMinutes?: number | null;
+  }): Promise<{ status: string; store_id?: string; message?: string }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/merchants/profile`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(profile),
+    });
+    return res.json();
+  },
 };

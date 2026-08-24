@@ -9,13 +9,15 @@ shaped `{"data": [...]}`. Packaged per section 5: data files plus
 so they're never reused (reusing a filename gets a bundle silently rejected --
 see section 5's "single most important naming rule").
 
-Only entity + action feeds are compiled -- the required pair per the playbook
-("entity + action are the required pair, so it's fine to ship those two first
-and add service later"). The service feed needs per-merchant lead_time /
-opening hours / delivery-area data that doesn't exist in the current intake
-yet; inventing that data would violate the playbook's own explicit rule
-("don't invent a lead time... omit the merchant instead"). Add it once
-onboarding intake captures those fields.
+Entity + action feeds are always compiled -- the required pair per the
+playbook ("entity + action are the required pair, so it's fine to ship those
+two first and add service later"). The service feed (section 3.3) is now
+compiled too, but per-merchant: a merchant with no real lead_time on file is
+omitted from the service feed entirely rather than assigned an invented
+number (the playbook's explicit rule -- no safe default exists for lead_time)
+-- it still gets an entity + action feed row, it just carries no service
+feed data. ServiceHours is similarly only emitted when real structured
+open/close data exists.
 """
 
 import json
@@ -30,10 +32,12 @@ logger = logging.getLogger("feedops.feed_compiler")
 FEED_DESCRIPTOR_NAMES = {
     "entity": "reservewithgoogle.entity",
     "action": "reservewithgoogle.action.v2",
+    "service": "google.food_service",
 }
 FEED_DATA_FILE_PREFIXES = {
     "entity": "entity",
     "action": "actions",
+    "service": "services",
 }
 
 # section 3.2: the enum is DELIVERY/TAKEOUT -- not PICKUP.
@@ -94,16 +98,103 @@ class ActionsCenterFeedCompiler:
 
         return location
 
+    @staticmethod
+    def _lead_time_duration(minutes: Any) -> Optional[str]:
+        """Section 3.3: `Duration` is a string with an `s` suffix, e.g. `"5400s"`
+        -- not `90` or `"90m"`. Returns None (never a fabricated fallback) if
+        no real, positive lead time is on file."""
+        try:
+            minutes = float(minutes)
+        except (TypeError, ValueError):
+            return None
+        return f"{int(minutes * 60)}s" if minutes > 0 else None
+
+    @staticmethod
+    def _time_of_day(time_str: Any) -> Optional[Dict[str, int]]:
+        """Section 3.3: `TimeOfDay` is an object (`{"hours":11,"minutes":0}`),
+        not a `"11:00"` string."""
+        if not time_str or ":" not in str(time_str):
+            return None
+        try:
+            hours, minutes = str(time_str).split(":")
+            return {"hours": int(hours), "minutes": int(minutes)}
+        except ValueError:
+            return None
+
+    def _build_service_rows(
+        self, merchant: Dict[str, Any], entity_id: str, service_types: List[str], link_ids: Dict[str, str]
+    ) -> List[Dict[str, Any]]:
+        """
+        One `{"service": {...}}` row per fulfillment type, plus one shared
+        `{"service_hours": {...}}` row if real opening-hours data exists.
+        `lead_time` has no safe default (section 3.3) -- a merchant with none
+        on file is omitted from the service feed entirely, not assigned an
+        invented number. Same rule for hours: no opening_hours on file means
+        no `service_hours` object, never a fabricated schedule.
+        """
+        lead_time = self._lead_time_duration(merchant.get("lead_time_minutes"))
+        if lead_time is None:
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        service_ids: List[str] = []
+        for service_type in service_types:
+            link_id = link_ids.get(service_type)
+            if not link_id:
+                continue
+            service_id = f"service_{service_type.lower()}_{entity_id}"
+            service_ids.append(service_id)
+            rows.append({
+                "service": {
+                    "service_id": service_id,
+                    "service_type": service_type,
+                    "parent_entity_id": entity_id,
+                    "lead_time": {"min_lead_time_duration": lead_time},
+                    "action_link_id": link_id,
+                }
+            })
+
+        if not service_ids:
+            return []
+
+        asap_hours = []
+        for day in merchant.get("opening_hours") or []:
+            if not day.get("isOpen"):
+                continue
+            open_time = self._time_of_day(day.get("openTime"))
+            close_time = self._time_of_day(day.get("closeTime"))
+            if not open_time or not close_time:
+                continue
+            asap_hours.append({
+                "time_windows": {
+                    "day_of_week": [str(day.get("day", "")).upper()],
+                    "time_windows": {"open_time": open_time, "close_time": close_time},
+                }
+            })
+
+        if asap_hours:
+            rows.append({
+                "service_hours": {
+                    "hours_id": f"hours_{entity_id}",
+                    "service_ids": service_ids,
+                    "asap_hours": asap_hours,
+                }
+            })
+
+        return rows
+
     def compile_feeds(self, merchant_data_list: List[Dict[str, Any]]) -> Dict[str, str]:
         """
-        Compiles entity + action feeds for a batch of merchants. A merchant with
-        no usable address is skipped from *both* feeds -- eligibility must stay
+        Compiles entity + action feeds for a batch of merchants, plus a service
+        feed row for any merchant with a real lead_time on file. A merchant with
+        no usable address is skipped from *all* feeds -- eligibility must stay
         byte-identical across feeds (section 4), or Google rejects the orphan
         records that result from a merchant appearing in one feed but not another.
         """
         timestamp = int(time.time())
         entity_rows: List[Dict[str, Any]] = []
         action_rows: List[Dict[str, Any]] = []
+        service_rows: List[Dict[str, Any]] = []
 
         for merchant in merchant_data_list:
             raw_id = merchant.get("entity_id") or merchant.get("id") or merchant.get("store_id")
@@ -128,19 +219,24 @@ class ActionsCenterFeedCompiler:
             # case -- rather than omit the merchant from the action feed entirely.
             # Queued: let onboarding intake specify this explicitly per merchant.
             service_types = merchant.get("service_types") or ["DELIVERY"]
+            link_ids: Dict[str, str] = {}
             for service_type in service_types:
                 if service_type not in VALID_SERVICE_TYPES:
                     logger.warning(f"Skipping invalid service_type '{service_type}' for '{entity_id}'.")
                     continue
+                link_id = f"link_{service_type.lower()}_{entity_id}"
+                link_ids[service_type] = link_id
                 action_rows.append({
                     "entity_id": entity_id,
-                    "link_id": f"link_{service_type.lower()}_{entity_id}",
+                    "link_id": link_id,
                     "url": order_url,
                     "actions": [{"food_ordering_info": {"service_type": service_type}}],
                 })
 
+            service_rows.extend(self._build_service_rows(merchant, entity_id, list(link_ids.keys()), link_ids))
+
         feeds_generated: Dict[str, str] = {}
-        for feed_type, rows in (("entity", entity_rows), ("action", action_rows)):
+        for feed_type, rows in (("entity", entity_rows), ("action", action_rows), ("service", service_rows)):
             if not rows:
                 continue
 
