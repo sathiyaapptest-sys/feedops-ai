@@ -12,6 +12,7 @@ export function MyStore() {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [address, setAddress] = useState('');
+  const [leadTimeMinutes, setLeadTimeMinutes] = useState<number | ''>('');
   
   const [serviceOptions, setServiceOptions] = useState({
     delivery: false,
@@ -49,6 +50,7 @@ export function MyStore() {
           if (data.serviceOptions) setServiceOptions(data.serviceOptions);
           if (data.timings) setTimings(data.timings);
           if (data.placeId) setHasPlaceId(true);
+          if (typeof data.leadTimeMinutes === 'number') setLeadTimeMinutes(data.leadTimeMinutes);
         }
       });
     }
@@ -153,9 +155,35 @@ export function MyStore() {
         address,
         serviceOptions,
         timings,
+        leadTimeMinutes: leadTimeMinutes === '' ? null : leadTimeMinutes,
         updatedAt: new Date().toISOString()
       }, { merge: true });
-      setMessage({type: 'success', text: 'Store profile saved successfully.'});
+
+      // Best-effort sync into the `merchants` collection -- the system of
+      // record the daily feed push actually compiles from. A failure here
+      // shouldn't block the profile save above (that data isn't lost, it's
+      // just not yet reflected in the feed pipeline), so it's reported
+      // separately rather than thrown.
+      let feedSyncNote = '';
+      try {
+        const sync = await api.saveMerchantProfile({
+          storeName,
+          address,
+          phone,
+          email,
+          placeId: placeIdInput || undefined,
+          serviceOptions,
+          timings,
+          leadTimeMinutes: leadTimeMinutes === '' ? null : leadTimeMinutes,
+        });
+        if (sync.status !== 'success') {
+          feedSyncNote = ` (feed sync failed: ${sync.message || 'unknown error'})`;
+        }
+      } catch (syncErr: any) {
+        feedSyncNote = ` (feed sync failed: ${syncErr.message})`;
+      }
+
+      setMessage({type: feedSyncNote ? 'info' : 'success', text: `Store profile saved successfully.${feedSyncNote}`});
     } catch (err: any) {
       setMessage({type: 'error', text: err.message});
     } finally {
@@ -227,7 +255,20 @@ export function MyStore() {
                 <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-white" placeholder="hello@cornercafe.com" />
               </div>
             </div>
-            
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Average Prep / Lead Time (minutes)</label>
+              <input
+                type="number"
+                min={0}
+                value={leadTimeMinutes}
+                onChange={(e) => setLeadTimeMinutes(e.target.value === '' ? '' : Number(e.target.value))}
+                className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-white"
+                placeholder="e.g. 30"
+              />
+              <p className="text-xs text-slate-500 mt-1">Required for Google's service feed (hours/lead-time). Leave blank if unknown -- we won't guess a number on your behalf.</p>
+            </div>
+
             {/* Service Options */}
             <div className="pt-2">
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Service Options</label>

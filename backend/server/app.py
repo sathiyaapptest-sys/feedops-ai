@@ -3,21 +3,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import asyncio
+import logging
 import os
+import re
 import uuid
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 import shutil
 import tempfile
 from pydantic import BaseModel
+
+logger = logging.getLogger("feedops.server")
 from backend.tools.menu_extractor import ImageMenuExtractor
 from backend.tools.excel_parser import SpreadsheetFeedParser
-from backend.tools.places_matcher import GooglePlacesClient
+from backend.tools.places_matcher import GooglePlacesClient, resolve_entity_match
 from backend.server.auth import get_current_user
 from backend.agent.orchestrator import FeedOpsOrchestrator
 from backend.db.firestore_client import (
-    MerchantRepository, STATUS_NEEDS_REVIEW, STATUS_APPROVED, STATUS_REJECTED,
+    MerchantRepository, STATUS_NEW, STATUS_MATCHED, STATUS_NEEDS_REVIEW,
+    STATUS_NO_LISTING, STATUS_APPROVED, STATUS_REJECTED,
     OrganizationRepository, ORG_TYPE_MERCHANT, ORG_TYPE_AGGREGATOR, PORTAL_STATUS_NOT_STARTED,
     UploadBatchRepository, VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS,
 )
@@ -57,6 +62,48 @@ class OrganizationConfigIn(BaseModel):
     conversion_partner_id: Optional[str] = None
     portal_status_sandbox: Optional[str] = None
     portal_status_production: Optional[str] = None
+
+
+class ServiceOptionsIn(BaseModel):
+    delivery: bool = False
+    takeaway: bool = False
+    inStore: bool = False
+
+
+class TimingIn(BaseModel):
+    day: str
+    isOpen: bool
+    openTime: str
+    closeTime: str
+
+
+class MerchantProfileIn(BaseModel):
+    """MyStore.tsx's self-service profile form -- the fields the daily feed
+    push, and now the service feed (lead time + hours), actually need."""
+    storeName: str
+    address: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    placeId: Optional[str] = None
+    serviceOptions: ServiceOptionsIn = ServiceOptionsIn()
+    timings: List[TimingIn] = []
+    leadTimeMinutes: Optional[float] = None
+
+
+def _service_types_from_options(options: Dict[str, Any]) -> List[str]:
+    """Maps MyStore.tsx's service-option checkboxes to Actions Center's
+    DELIVERY/TAKEOUT enum (section 3.2) -- inStore has no feed equivalent."""
+    types = []
+    if options.get("delivery"):
+        types.append("DELIVERY")
+    if options.get("takeaway"):
+        types.append("TAKEOUT")
+    return types
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "merchant"
 
 
 @app.post("/api/organizations")
@@ -119,6 +166,58 @@ async def onboard_merchant(request: Request, current_user: dict = Depends(get_cu
             yield f"data: {event_json}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.get("/api/merchants/profile")
+async def get_merchant_profile(current_user: dict = Depends(get_current_user)):
+    """Returns the authenticated merchant's own record from the `merchants`
+    collection -- the system of record the daily feed push, triage queue, and
+    readiness scorecard all read from. Distinct from the `stores` collection
+    MyStore.tsx also writes directly for its own display -- this is the copy
+    that actually reaches Google."""
+    email = current_user.get("email")
+    if not email:
+        return {"status": "error", "message": "No email on the authenticated user."}
+    try:
+        record = MerchantRepository().get(email)
+        return {"status": "success", "profile": record}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/merchants/profile")
+async def save_merchant_profile(payload: MerchantProfileIn, current_user: dict = Depends(get_current_user)):
+    """
+    Self-service merchant profile save. Writes into the same `merchants`
+    collection the daily feed push compiles from, so editing hours/lead-time
+    here actually reaches the entity/action/service feeds instead of sitting
+    in the separate `stores` collection MyStore.tsx also writes for its own
+    (unrelated) display purposes. Keyed by the authenticated user's email,
+    matching the identifier space `stores/{email}` already uses.
+    """
+    email = current_user.get("email")
+    if not email:
+        return {"status": "error", "message": "No email on the authenticated user."}
+
+    store_id = email
+    try:
+        repo = MerchantRepository()
+        existing = repo.get(store_id)
+        record: Dict[str, Any] = {
+            "store_id": store_id,
+            "name": payload.storeName,
+            "address": payload.address,
+            "telephone": payload.phone,
+            "email": payload.email or email,
+            "service_types": _service_types_from_options(payload.serviceOptions.model_dump()),
+            "opening_hours": [t.model_dump() for t in payload.timings],
+            "lead_time_minutes": payload.leadTimeMinutes,
+            "place_id": payload.placeId,
+        }
+        if not existing:
+            record["status"] = STATUS_NEW
+        repo.upsert({k: v for k, v in record.items() if v is not None})
+        return {"status": "success", "store_id": store_id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.get("/api/agent/stream")
 async def agent_stream():
@@ -259,14 +358,59 @@ async def upload_menu_image(file: UploadFile = File(...)):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+async def _persist_bulk_merchant(merchant: Dict[str, Any], org_id: str) -> Dict[str, Any]:
+    """
+    Bulk upload's per-row equivalent of the single-merchant onboarding
+    pipeline's _persist_merchant: a deterministic Places match (no LLM
+    narration -- this can run over many rows in one request, so it uses the
+    same cheap baseline EntityMatcherAgent itself falls back to, not a Gemini
+    call per row) followed by a real Firestore write. Without this, bulk
+    upload only validated rows and handed them back to the browser -- they
+    never reached the triage queue, readiness scorecard, or daily feed push.
+    """
+    store_id = f"{org_id}_{_slugify(merchant['name'])}"
+    try:
+        match = await resolve_entity_match(merchant["name"], merchant["address"])
+    except Exception as e:
+        logger.warning(f"Places lookup failed for bulk row '{merchant['name']}': {e}")
+        match = {"confidence": 0.0, "place_id": None}
+
+    confidence = match.get("confidence", 0.0)
+    if confidence >= 0.90:
+        status = STATUS_MATCHED
+    elif confidence > 0.0:
+        status = STATUS_NEEDS_REVIEW
+    else:
+        status = STATUS_NO_LISTING
+
+    record: Dict[str, Any] = {
+        "store_id": store_id,
+        "org_id": org_id,
+        "name": merchant["name"],
+        "address": merchant["address"],
+        "telephone": merchant.get("telephone"),
+        "action_link": merchant.get("action_link"),
+        "status": status,
+        "visibility": "private",
+        "confidence": match.get("confidence"),
+        "place_id": match.get("place_id"),
+    }
+    MerchantRepository().upsert({k: v for k, v in record.items() if v is not None})
+    return {"store_id": store_id, "name": merchant["name"], "status": status}
+
 @app.post("/api/upload/spreadsheet")
 async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str] = Form(None)):
     """
-    Accepts multipart/form-data Excel/CSV and populates the merchant batch.
+    Accepts multipart/form-data Excel/CSV, validates it, and persists every
+    valid row the same way single-merchant onboarding does -- a deterministic
+    Places match plus a real `merchants` collection write -- so bulk-uploaded
+    merchants actually reach the triage queue, readiness scorecard, and daily
+    feed push, not just a parsed preview shown once in the browser.
 
     With org_id: loads that organization's saved column-mapping adapter (remembered
     from a previous upload) or infers and saves one, and rows that fail required-field
-    validation come back in `errors` instead of being silently dropped or guessed at.
+    validation come back in `errors` instead of being silently dropped or guessed at
+    (and are never persisted).
     """
     try:
         fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
@@ -281,10 +425,25 @@ async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str]
         merchants = [m.model_dump() for m in data["merchants"]]
         menus = [m.model_dump() for m in data["menus"]]
 
+        persisted: List[Dict[str, Any]] = []
+        if merchants:
+            effective_org_id = org_id or "unknown"
+            results = await asyncio.gather(
+                *[_persist_bulk_merchant(m, effective_org_id) for m in merchants],
+                return_exceptions=True,
+            )
+            for m, result in zip(merchants, results):
+                if isinstance(result, Exception):
+                    logger.warning(f"Could not persist bulk merchant '{m.get('name')}': {result}")
+                else:
+                    persisted.append(result)
+
         return {
             "status": "success",
             "merchants_count": len(merchants),
             "menus_count": len(menus),
+            "persisted_count": len(persisted),
+            "persisted": persisted,
             "errors": data["errors"],
             "adapter": data["adapter"],
             "data": {
