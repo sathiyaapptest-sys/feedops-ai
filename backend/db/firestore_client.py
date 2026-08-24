@@ -19,6 +19,7 @@ logger = logging.getLogger("feedops.db")
 
 MERCHANTS_COLLECTION = os.getenv("FIRESTORE_MERCHANTS_COLLECTION", "merchants")
 ORGANIZATIONS_COLLECTION = os.getenv("FIRESTORE_ORGANIZATIONS_COLLECTION", "organizations")
+UPLOAD_BATCHES_COLLECTION = os.getenv("FIRESTORE_UPLOAD_BATCHES_COLLECTION", "upload_batches")
 
 # Lifecycle statuses a merchant document can hold.
 STATUS_NEW = "new"
@@ -39,6 +40,14 @@ ORG_TYPE_AGGREGATOR = "aggregator"
 PORTAL_STATUS_NOT_STARTED = "not_started"
 PORTAL_STATUS_CONFIGURED = "configured"          # SFTP key + username registered
 PORTAL_STATUS_LAUNCH_APPROVED = "launch_approved"  # Google approved production
+
+# Whether a human has confirmed an uploaded batch actually shows "Done, 0
+# errors" in Partner Portal -> Ingestion -> History. There is no API for this
+# -- a clean SFTP put only proves delivery, not acceptance (playbook section
+# 6) -- so this is deliberately a self-report, never an automated check.
+VERIFICATION_PENDING = "pending"
+VERIFICATION_CONFIRMED_CLEAN = "confirmed_clean"
+VERIFICATION_FLAGGED_ERRORS = "flagged_errors"
 
 
 def get_client() -> "firestore.Client":
@@ -150,6 +159,58 @@ class OrganizationRepository:
     def get_adapter(self, org_id: str) -> Optional[Dict[str, Any]]:
         org = self.get(org_id)
         return org.get("adapter") if org else None
+
+
+class UploadBatchRepository:
+    """
+    Firestore-backed history over the `upload_batches` collection -- one record
+    per daily feed push run, so "what did we upload last Tuesday, and to whom"
+    is answerable instead of vanishing once run_daily_feed_push()'s return
+    dict goes out of scope.
+
+    Also the home of the human verification loop: Google exposes no API to
+    confirm a feed was actually *accepted* (only that it was *delivered*, via
+    the SFTP put succeeding) -- that's a manual Partner Portal -> Ingestion ->
+    History check. This repository never calls Google; mark_verified() only
+    records what a human reports after doing that check themselves.
+    """
+
+    def __init__(self, client: Optional["firestore.Client"] = None):
+        self.client = client or get_client()
+        self.collection = self.client.collection(UPLOAD_BATCHES_COLLECTION)
+
+    def create(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        batch = {
+            **batch,
+            "verification_status": VERIFICATION_PENDING,
+            "verified_by": None,
+            "verified_at": None,
+            "verification_notes": None,
+        }
+        payload = {**batch, "created_at": firestore.SERVER_TIMESTAMP}
+        self.collection.document(batch["batch_id"]).set(payload)
+        return batch
+
+    def get(self, batch_id: str) -> Optional[Dict[str, Any]]:
+        snapshot = self.collection.document(batch_id).get()
+        return snapshot.to_dict() if snapshot.exists else None
+
+    def list_all(self) -> List[Dict[str, Any]]:
+        return [doc.to_dict() for doc in self.collection.stream()]
+
+    def list_pending_verification(self) -> List[Dict[str, Any]]:
+        query = self.collection.where(filter=FieldFilter("verification_status", "==", VERIFICATION_PENDING))
+        return [doc.to_dict() for doc in query.stream()]
+
+    def mark_verified(self, batch_id: str, status: str, verified_by: str, notes: Optional[str] = None) -> None:
+        """Records a human's self-reported outcome of manually checking Partner
+        Portal -> Ingestion -> History. Never calls Google -- there's no API to."""
+        self.collection.document(batch_id).set({
+            "verification_status": status,
+            "verified_by": verified_by,
+            "verified_at": firestore.SERVER_TIMESTAMP,
+            "verification_notes": notes,
+        }, merge=True)
 
 
 def seed_from_snapshot(merchants: List[Dict[str, Any]], repo: Optional[MerchantRepository] = None) -> int:
