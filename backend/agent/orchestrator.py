@@ -390,23 +390,39 @@ class FeedOpsOrchestrator:
         )
         ping_response = tool_results.get("dispatch_conversion_ping")
         agent_unreachable = ping_response is None
+        sentry_error = None
         if agent_unreachable:
             logger.warning("ConversionSentryAgent didn't call its tool; pinging directly instead.")
-            ping_response = await self.conversion_sentry_tool.dispatch_conversion_ping(self.environment)
+            try:
+                ping_response = await self.conversion_sentry_tool.dispatch_conversion_ping(self.environment)
+            except Exception as e:
+                # e.g. GOOGLE_CONVERSION_PARTNER_ID not configured yet -- a real, expected
+                # setup gap (see the walkthrough guide), not a bug. Report it, don't crash
+                # the rest of the onboarding pipeline over it.
+                sentry_error = str(e)
+                logger.warning(f"Conversion ping unavailable: {e}")
 
-        first_result = (ping_response.get("results") or [{}])[0]
-        fallback_detail = (
-            f"Conversion ping verified (Status: {first_result.get('status_code')}, "
-            f"Latency: {first_result.get('latency_ms')}ms)."
-        )
+        if ping_response is not None:
+            first_result = (ping_response.get("results") or [{}])[0]
+            fallback_detail = (
+                f"Conversion ping verified (Status: {first_result.get('status_code')}, "
+                f"Latency: {first_result.get('latency_ms')}ms)."
+            )
+            detail = (
+                f"{fallback_detail} (ConversionSentryAgent unavailable, pinged directly.)"
+                if agent_unreachable else (sentry_narration or fallback_detail)
+            )
+            payload = {**ping_response, "agent_reasoning": sentry_narration}
+            status = "completed"
+        else:
+            detail = f"Conversion ping unavailable: {sentry_error}"
+            payload = {"error": sentry_error, "agent_reasoning": sentry_narration}
+            status = "flagged"
 
         yield json.dumps(AgentStreamEvent(
             agent_name="ConversionSentryAgent",
             stage="conversion_health",
-            status="completed",
-            detail=(
-                f"{fallback_detail} (ConversionSentryAgent unavailable, pinged directly.)"
-                if agent_unreachable else (sentry_narration or fallback_detail)
-            ),
-            payload={**ping_response, "agent_reasoning": sentry_narration}
+            status=status,
+            detail=detail,
+            payload=payload
         ).model_dump())
