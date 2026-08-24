@@ -244,11 +244,22 @@ class FeedOpsOrchestrator:
             logger.warning(f"EntityMatcherAgent run failed, continuing with deterministic result only: {e}")
             return f"(EntityMatcherAgent unavailable: {e})"
 
-    async def _persist_merchant(self, merchant_data: Dict[str, Any], match_result: Dict[str, Any], status: str) -> None:
+    async def _persist_merchant(
+        self, merchant_data: Dict[str, Any], match_result: Dict[str, Any], status: str, agent_reasoning: str = ""
+    ) -> None:
         """
         Best-effort write-through to Firestore so the triage queue and readiness
         scorecard reflect real onboarding runs. Never blocks or fails the SSE
         pipeline -- a merchant who fails to persist can still be re-onboarded.
+
+        Persists agent_reasoning (previously only streamed over SSE and then lost)
+        and tags org_id/visibility so a future case-memory RAG system (retrieve
+        "how was a similar ambiguous match resolved before") has real data to work
+        with once enough of it accumulates -- not built yet, but the data won't
+        need backfilling when it is. visibility defaults to "private": an org's own
+        resolved cases are specific to their merchants and shouldn't be pooled
+        across tenants by default -- only a deliberately curated, generalized
+        pattern belongs in the shared playbook index.
         """
         store_id = merchant_data.get("store_id")
         if not store_id:
@@ -257,9 +268,12 @@ class FeedOpsOrchestrator:
 
         record = {
             "store_id": store_id,
+            "org_id": merchant_data.get("org_id"),
             "name": merchant_data.get("name"),
             "address": merchant_data.get("address"),
             "status": status,
+            "agent_reasoning": agent_reasoning,
+            "visibility": "private",
         }
         if match_result.get("place_id"):
             record["place_id"] = match_result["place_id"]
@@ -311,7 +325,7 @@ class FeedOpsOrchestrator:
             match_status = STATUS_NEEDS_REVIEW
         else:
             match_status = STATUS_NO_LISTING
-        await self._persist_merchant(merchant_data, match_result, match_status)
+        await self._persist_merchant(merchant_data, match_result, match_status, agent_reasoning)
 
         if confidence < 0.90 and confidence > 0.0:
             yield json.dumps(AgentStreamEvent(

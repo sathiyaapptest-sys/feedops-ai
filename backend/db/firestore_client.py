@@ -18,6 +18,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 logger = logging.getLogger("feedops.db")
 
 MERCHANTS_COLLECTION = os.getenv("FIRESTORE_MERCHANTS_COLLECTION", "merchants")
+ORGANIZATIONS_COLLECTION = os.getenv("FIRESTORE_ORGANIZATIONS_COLLECTION", "organizations")
 
 # Lifecycle statuses a merchant document can hold.
 STATUS_NEW = "new"
@@ -27,6 +28,17 @@ STATUS_NO_LISTING = "no_listing"
 STATUS_EXCLUDED_CLOSED = "excluded_closed"
 STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
+
+# Who's using FeedOps AI -- a single restaurant, or a platform managing many.
+ORG_TYPE_MERCHANT = "merchant"
+ORG_TYPE_AGGREGATOR = "aggregator"
+
+# Where an org is in the Partner Portal setup process (playbook sections 2, 9)
+# -- entirely manual, human-only steps on Google's side that our system can't
+# do for them, only track.
+PORTAL_STATUS_NOT_STARTED = "not_started"
+PORTAL_STATUS_CONFIGURED = "configured"          # SFTP key + username registered
+PORTAL_STATUS_LAUNCH_APPROVED = "launch_approved"  # Google approved production
 
 
 def get_client() -> "firestore.Client":
@@ -95,6 +107,49 @@ class MerchantRepository:
             "resolved_edge_cases": resolved_edge_cases,
             "by_status": by_status,
         }
+
+
+class OrganizationRepository:
+    """
+    Firestore-backed CRUD over the `organizations` collection -- who's using
+    FeedOps AI (a merchant or an aggregator), their per-environment Partner
+    Portal config (SFTP username, numeric conversion partner ID, setup
+    status), and their saved data-source adapter (see
+    backend.tools.data_adapter) so a returning org's spreadsheet shape is
+    remembered instead of re-guessed on every upload.
+    """
+
+    def __init__(self, client: Optional["firestore.Client"] = None):
+        self.client = client or get_client()
+        self.collection = self.client.collection(ORGANIZATIONS_COLLECTION)
+
+    def create(self, org: Dict[str, Any]) -> Dict[str, Any]:
+        org_id = org["org_id"]
+        payload = {**org, "created_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP}
+        self.collection.document(org_id).set(payload)
+        return org
+
+    def get(self, org_id: str) -> Optional[Dict[str, Any]]:
+        snapshot = self.collection.document(org_id).get()
+        return snapshot.to_dict() if snapshot.exists else None
+
+    def update_config(self, org_id: str, config: Dict[str, Any]) -> None:
+        """Merges into the org's `config` map -- SFTP username(s), conversion
+        partner ID, portal setup status per environment."""
+        existing = self.get(org_id) or {}
+        merged_config = {**existing.get("config", {}), **config}
+        self.collection.document(org_id).set(
+            {"config": merged_config, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True
+        )
+
+    def save_adapter(self, org_id: str, adapter: Dict[str, Any]) -> None:
+        self.collection.document(org_id).set(
+            {"adapter": adapter, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True
+        )
+
+    def get_adapter(self, org_id: str) -> Optional[Dict[str, Any]]:
+        org = self.get(org_id)
+        return org.get("adapter") if org else None
 
 
 def seed_from_snapshot(merchants: List[Dict[str, Any]], repo: Optional[MerchantRepository] = None) -> int:
