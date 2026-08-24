@@ -13,6 +13,8 @@ from backend.tools.excel_parser import SpreadsheetFeedParser
 from backend.tools.places_matcher import GooglePlacesClient
 from backend.server.auth import get_current_user
 from backend.agent.orchestrator import FeedOpsOrchestrator
+from backend.db.firestore_client import MerchantRepository, STATUS_NEEDS_REVIEW, STATUS_APPROVED, STATUS_REJECTED
+from backend.jobs.scheduled_tasks import run_daily_feed_push
 
 app = FastAPI(title="FeedOps AI Backend")
 
@@ -57,40 +59,61 @@ async def agent_stream():
 
 @app.get("/api/triage/queue")
 async def get_triage_queue():
-    """Returns pending HITL matches (< 90% confidence)."""
-    return {"queue": [
-        {
-            "id": "11",
-            "name": "Corner Cafe",
-            "confidence": 0.74,
-            "issue": "Ambiguous Match Edge Case",
-            "suggested_place_id": "ChIJ_88888"
-        }
-    ]}
+    """Returns merchants flagged for manual review (< 90% Places match confidence)."""
+    try:
+        queue = MerchantRepository().list_by_status(STATUS_NEEDS_REVIEW)
+        return {"queue": queue}
+    except Exception as e:
+        return {"queue": [], "error": str(e)}
 
 @app.post("/api/triage/resolve")
 async def resolve_triage(request: Request):
-    """Accepts manual approval or override for an entity match."""
+    """Accepts manual approval or rejection for an entity match."""
     data = await request.json()
-    return {"status": "resolved", "id": data.get("id"), "action": "approved"}
+    merchant_id = data.get("id")
+    action = data.get("action")
+    status = STATUS_APPROVED if action == "approve" else STATUS_REJECTED
+    try:
+        MerchantRepository().update_status(merchant_id, status)
+        return {"status": "resolved", "id": merchant_id, "action": action}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.get("/api/feeds/readiness")
 async def feeds_readiness():
-    """Computes the live 0-100% Launch Readiness Scorecard metrics."""
-    return {
-        "score": 100,
-        "status": "Launch Ready \U0001f7e2",
-        "metrics": {
-            "fully_operational": 9,
-            "resolved_edge_cases": 3,
-            "total": 12
+    """Computes the live Launch Readiness Scorecard from real merchant records."""
+    try:
+        summary = MerchantRepository().readiness_summary()
+        return {
+            "score": summary["score"],
+            "status": "Launch Ready \U0001f7e2" if summary["score"] >= 100 else "In Progress",
+            "metrics": {
+                "fully_operational": summary["fully_operational"],
+                "resolved_edge_cases": summary["resolved_edge_cases"],
+                "total": summary["total"],
+            }
         }
-    }
+    except Exception as e:
+        return {"score": 0, "status": "Unavailable", "metrics": {}, "error": str(e)}
 
 @app.post("/api/feeds/trigger-pipeline")
 async def trigger_pipeline():
-    """Triggers the 3-day consecutive SFTP feed compiler and conversion ping test."""
-    return {"status": "Pipeline triggered successfully", "days_simulated": 3}
+    """Runs the real daily feed push (closed-merchant guard, compile, SFTP upload) on demand."""
+    # run_daily_feed_push is a synchronous CLI job entrypoint that manages its own
+    # event loop internally (asyncio.run); to_thread keeps that safe to call from
+    # inside FastAPI's already-running event loop.
+    summary = await asyncio.to_thread(run_daily_feed_push, "sandbox")
+    return summary
+
+@app.post("/api/support/ask")
+async def ask_support(request: Request):
+    """'Ask FeedOps' -- answers a question grounded in the real Actions Center playbook
+    via RAG, and returns which playbook section(s) it cited."""
+    data = await request.json()
+    question = data.get("question", "")
+    if not question:
+        return {"answer": "Ask a question.", "sources": []}
+    return await get_orchestrator().ask_support(question)
 
 @app.get("/api/places/search")
 async def search_places(query: str):
