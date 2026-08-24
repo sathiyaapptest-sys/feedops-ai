@@ -92,9 +92,24 @@ grind for restaurant aggregators.
 - **Free tier rate limits are real** — running several agent calls back to
   back (e.g. rapid manual testing) will trip per-minute quota. Not a bug;
   space out calls or expect occasional graceful fallback under quota.
-- **`.env` holds `GEMINI_API_KEY`** (gitignored, never committed) — currently
-  a free-tier key on its own GCP project (not the original Prepay-billed one
-  that was depleted).
+- **`.env` holds `GEMINI_API_KEY`** (gitignored, never committed) — belongs to
+  the **"Gemini Project - FeedOps 2"** AI Studio project
+  (`gen-lang-client-0171944630`), confirmed genuine **Free tier: no billing
+  account attached, so it cannot be charged** — exceeding quota just returns
+  429s, never a bill. There is a second, separate project, **"Gemini Project
+  - FeedOps AI"** (`gen-lang-client-0724450224`), which *is* billing-linked
+  (Tier 1, pay-as-you-go once quota's free allowance is exceeded) but sits
+  unused and currently non-responding, pending Google's "administrator must
+  verify this account" step in Cloud Console → Billing → Account management.
+  That project's billing account ("My Billing Account", `01DC66-D1B783-155448`)
+  holds a ₹28,693.88 Free Trial credit valid until **21 Nov 2026** — covers
+  standard GCP infra (Cloud Run, Firestore, Cloud Build, Logging, Firebase
+  RTDB) but explicitly **excludes Gemini API costs** (Google's own free-trial
+  terms). None of this is live yet since nothing's deployed to Cloud Run —
+  it only becomes relevant if/when deployment happens under the FeedOps AI
+  project. **Do not switch `.env` to the FeedOps AI key without first setting
+  a Gemini API spend cap** (Tier 1 default ceiling is ~$250/₹20-21k) and
+  resolving the account verification.
 - No `gcloud` CLI, no GCP credentials, no running Docker daemon by default
   in a fresh sandboxed session — Docker Desktop can be started with
   `open -a Docker` and works once up (verified this session); `gcloud`
