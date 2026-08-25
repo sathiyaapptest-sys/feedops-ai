@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from '../../lib/api';
 import { db, auth } from '../../lib/firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
-import { Utensils, UploadCloud, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Utensils, UploadCloud, Loader2, CheckCircle2, AlertCircle, Plus } from 'lucide-react';
 
 interface MenuItem {
   name: string;
@@ -21,6 +21,7 @@ export function Menu() {
   const [saving, setSaving] = useState(false);
   const [, setLoading] = useState(true);
   const [menuStatus, setMenuStatus] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -232,8 +233,23 @@ export function Menu() {
                   : 'Click or drag file here (JPG, PNG, XLSX, JSON)'}
               </p>
             </div>
-            <input type="file" className="hidden" accept="image/*,.xlsx,.json" onChange={handleFileChange} disabled={uploading} />
+            <input ref={fileInputRef} type="file" className="hidden" accept="image/*,.xlsx,.json" onChange={handleFileChange} disabled={uploading} />
           </label>
+
+          {/* Explicit, visible "add more" button -- triggers the same
+              hidden file input as the dropzone above, just as a compact,
+              unmissable affordance once a menu already has items in it. */}
+          {menuItems.length > 0 && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 border-2 border-dashed border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors text-sm font-medium disabled:opacity-50"
+            >
+              <Plus className="w-4 h-4" />
+              Add More Items
+            </button>
+          )}
         </div>
 
         {error && (
@@ -255,6 +271,9 @@ export function Menu() {
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
             <div className="flex items-center gap-3">
               <h3 className="font-semibold text-slate-900 dark:text-white">Menu Preview</h3>
+              <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300 rounded-full border border-blue-200 dark:border-blue-800/50">
+                {menuItems.length} item{menuItems.length === 1 ? '' : 's'}
+              </span>
               {menuStatus === 'draft' && (
                 <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 rounded-full border border-amber-200 dark:border-amber-800/50">Draft</span>
               )}
