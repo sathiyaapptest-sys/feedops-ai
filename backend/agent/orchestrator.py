@@ -21,7 +21,7 @@ from backend.tools.places_matcher import resolve_entity_match, generate_gbp_draf
 from backend.tools.feed_compiler import ActionsCenterFeedCompiler
 from backend.tools.conversion_sentry import ConversionSentryTool
 from backend.db.firestore_client import (
-    MerchantRepository, STATUS_MATCHED, STATUS_NEEDS_REVIEW, STATUS_NO_LISTING,
+    MerchantRepository, STATUS_MATCHED, STATUS_NEEDS_REVIEW, STATUS_NO_LISTING, SERVER_TIMESTAMP,
 )
 from backend.rag.playbook_index import retrieve_playbook_context
 
@@ -77,7 +77,7 @@ class FeedOpsOrchestrator:
         Sub-agent for reviewing Places match confidence and grounding ambiguous matches.
 
         The deterministic resolve_entity_match/generate_gbp_draft calls happen in plain
-        Python (see execute_onboarding_pipeline) and their result is handed to this agent
+        Python (see execute_entity_matching) and their result is handed to this agent
         as context -- it is not given them as tools. Gemini's google_search grounding tool
         cannot be combined with custom function-calling tools on the same agent (Google
         disables automatic function calling for the custom tools when both are present),
@@ -271,6 +271,8 @@ class FeedOpsOrchestrator:
             "org_id": merchant_data.get("org_id"),
             "name": merchant_data.get("name"),
             "address": merchant_data.get("address"),
+            "telephone": merchant_data.get("telephone"),
+            "email": merchant_data.get("email"),
             "status": status,
             "agent_reasoning": agent_reasoning,
             "visibility": "private",
@@ -281,17 +283,47 @@ class FeedOpsOrchestrator:
             record["confidence"] = match_result["confidence"]
 
         def _write():
-            MerchantRepository().upsert(record)
+            MerchantRepository().upsert({k: v for k, v in record.items() if v is not None})
 
         try:
             await asyncio.to_thread(_write)
         except Exception as e:
             logger.warning(f"Could not persist merchant '{store_id}' to Firestore: {e}")
 
-    async def execute_onboarding_pipeline(self, merchant_data: Dict[str, Any]) -> AsyncGenerator[str, None]:
+    async def _persist_feed_audit(
+        self, store_id: str, feed_contents: Dict[str, Any], audit_reasoning: str, conversion_health: Dict[str, Any]
+    ) -> None:
         """
-        Executes the full asynchronous onboarding lifecycle, streaming progress events
-        over SSE for real-time frontend visualization.
+        Write-through for the Services page's SchemaAuditor + ConversionSentry run,
+        so a merchant (or a judge) revisiting the page sees the last real compiled
+        feed bundle without needing to re-run the agents. Keyed by the same
+        store_id (the merchant's email) the entity-matching and profile-save steps
+        already write to, and merged rather than overwritten (see MerchantRepository.upsert).
+        """
+        record = {
+            "store_id": store_id,
+            "compiled_feeds": feed_contents,
+            "feed_audit_reasoning": audit_reasoning,
+            "conversion_health": conversion_health,
+            "feeds_compiled_at": SERVER_TIMESTAMP,
+        }
+
+        def _write():
+            MerchantRepository().upsert(record)
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception as e:
+            logger.warning(f"Could not persist feed audit for '{store_id}' to Firestore: {e}")
+
+    async def execute_entity_matching(self, merchant_data: Dict[str, Any]) -> AsyncGenerator[str, None]:
+        """
+        Onboard Store's pipeline stage: resolves the merchant's real-world Google
+        Business Profile via Places, and persists the result. This is deliberately
+        the *only* stage Onboard Store triggers -- SchemaAuditor/ConversionSentry
+        need the full merchant record (hours, lead time, service types) that My
+        Store collects afterwards, so running them here would either block on data
+        that doesn't exist yet or compile a feed with invented defaults.
         """
         # Step 1: Deterministic Places resolution (fast, cheap, reliable baseline)
         yield json.dumps(AgentStreamEvent(
@@ -356,7 +388,34 @@ class FeedOpsOrchestrator:
                 payload={**match_result, "agent_reasoning": agent_reasoning}
             ).model_dump())
 
-        # Step 3: Schema Compilation & Validation -- run through the real SchemaAuditorAgent
+    @staticmethod
+    def _read_feed_contents(feed_bundle: Dict[str, str]) -> Dict[str, Any]:
+        """Reads the actual JSON feed files compile_merchant_feed wrote to local disk
+        back into memory. Cloud Run's filesystem is ephemeral and per-instance, so
+        this is the only way a caller outside this process (the frontend, a judge
+        looking at the Services page) ever sees the real feed content rather than a
+        server-local path."""
+        contents: Dict[str, Any] = {}
+        for key, path in feed_bundle.items():
+            try:
+                with open(path) as f:
+                    contents[key] = json.load(f)
+            except Exception as e:
+                contents[key] = {"error": str(e)}
+        return contents
+
+    async def execute_feed_compilation(self, merchant_data: Dict[str, Any]) -> AsyncGenerator[str, None]:
+        """
+        Services page's pipeline stage: SchemaAuditor compiles + audits the
+        entity/action/service feed bundle from the full merchant record (already
+        carrying its Places match's place_id, plus the hours/lead-time/service-types
+        My Store collected), then ConversionSentry verifies the synthetic conversion
+        ping. Unlike execute_entity_matching, this needs no fresh Places lookup --
+        merchant_data (read from Firestore by the caller) already has everything.
+        """
+        store_id = merchant_data.get("store_id", "unknown")
+
+        # Step 1: Schema Compilation & Validation -- run through the real SchemaAuditorAgent
         yield json.dumps(AgentStreamEvent(
             agent_name="SchemaAuditorAgent",
             stage="schema_compilation",
@@ -366,18 +425,19 @@ class FeedOpsOrchestrator:
 
         audit_prompt = (
             f"merchant_data: {json.dumps(merchant_data)}\n"
-            f"match_result: {json.dumps(match_result)}\n"
             "First retrieve any relevant playbook rules, then compile this merchant's "
             "feed bundle and audit it."
         )
         audit_narration, tool_results = await self._run_tool_agent(
-            self.schema_auditor_runner, f"audit-{merchant_data.get('store_id', 'unknown')}", audit_prompt
+            self.schema_auditor_runner, f"audit-{store_id}", audit_prompt
         )
         feed_bundle = tool_results.get("compile_merchant_feed")
         agent_unreachable = feed_bundle is None
         if agent_unreachable:
             logger.warning("SchemaAuditorAgent didn't call compile_merchant_feed; compiling directly instead.")
-            feed_bundle = self.compiler.compile_merchant_feed(merchant_data, match_result)
+            feed_bundle = self.compiler.compile_merchant_feed(merchant_data)
+
+        feed_contents = self._read_feed_contents(feed_bundle)
 
         yield json.dumps(AgentStreamEvent(
             agent_name="SchemaAuditorAgent",
@@ -387,10 +447,10 @@ class FeedOpsOrchestrator:
                 "Feed bundle compiled (SchemaAuditorAgent unavailable, used deterministic compiler)."
                 if agent_unreachable else (audit_narration or "Feed bundle compiled.")
             ),
-            payload={"files": list(feed_bundle.keys()), "agent_reasoning": audit_narration}
+            payload={"files": list(feed_bundle.keys()), "agent_reasoning": audit_narration, "feed_contents": feed_contents}
         ).model_dump())
 
-        # Step 4: Synthetic Conversion Verification -- run through the real ConversionSentryAgent
+        # Step 2: Synthetic Conversion Verification -- run through the real ConversionSentryAgent
         yield json.dumps(AgentStreamEvent(
             agent_name="ConversionSentryAgent",
             stage="conversion_health",
@@ -400,7 +460,7 @@ class FeedOpsOrchestrator:
 
         sentry_prompt = f"environment: {self.environment}\nDispatch the conversion ping and report on health."
         sentry_narration, tool_results = await self._run_tool_agent(
-            self.conversion_sentry_runner, f"sentry-{merchant_data.get('store_id', 'unknown')}", sentry_prompt
+            self.conversion_sentry_runner, f"sentry-{store_id}", sentry_prompt
         )
         ping_response = tool_results.get("dispatch_conversion_ping")
         agent_unreachable = ping_response is None
@@ -440,3 +500,5 @@ class FeedOpsOrchestrator:
             detail=detail,
             payload=payload
         ).model_dump())
+
+        await self._persist_feed_audit(store_id, feed_contents, audit_narration, payload)

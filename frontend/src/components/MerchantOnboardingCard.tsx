@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { UploadCloud, AlertCircle, CheckCircle2, Loader2, Terminal } from 'lucide-react';
 
 import { api } from '@/lib/api';
+import { auth } from '@/lib/firebase';
 
 interface AgentEvent {
   agent_name: string;
@@ -19,15 +20,11 @@ const STATUS_STYLES: Record<AgentEvent['status'], string> = {
   flagged: 'text-amber-300',
 };
 
-function slugify(name: string): string {
-  const base = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-  return `${base || 'store'}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
 export const MerchantOnboardingCard: React.FC = () => {
   const [storeName, setStoreName] = useState('');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
 
   const [running, setRunning] = useState(false);
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -38,13 +35,21 @@ export const MerchantOnboardingCard: React.FC = () => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [events]);
 
+  // Pre-fill from the signed-in account -- store_id is always this email
+  // server-side regardless of what's typed here, so defaulting to it avoids
+  // a merchant accidentally onboarding under a different address than the
+  // one My Store/Services will actually read back.
+  useEffect(() => {
+    if (auth.currentUser?.email) setEmail((prev) => prev || auth.currentUser!.email!);
+  }, []);
+
   const flaggedForReview = events.some((e) => e.status === 'flagged' && e.stage === 'hitl_triage');
   const needsGbpDraft = events.some((e) => e.stage === 'gbp_generation');
-  const completedAllSteps = events.some((e) => e.stage === 'conversion_health');
+  const entityMatchDone = !running && events.length > 0;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!storeName || !address) return;
+    if (!storeName || !address || !email) return;
 
     setRunning(true);
     setRunError(null);
@@ -53,10 +58,10 @@ export const MerchantOnboardingCard: React.FC = () => {
     try {
       await api.onboardMerchant(
         {
-          store_id: slugify(storeName),
           name: storeName,
           address,
           telephone: phone || undefined,
+          email,
         },
         (event) => setEvents((prev) => [...prev, event])
       );
@@ -72,7 +77,9 @@ export const MerchantOnboardingCard: React.FC = () => {
       <div>
         <h2 className="text-2xl font-bold tracking-tight">Merchant Onboarding</h2>
         <p className="text-muted-foreground text-sm mt-1">
-          Runs the real EntityMatcher &rarr; SchemaAuditor &rarr; ConversionSentry pipeline live.
+          Runs the real EntityMatcherAgent live to find your Google Business Profile.
+          Add your hours and menu in My Store, then run schema &amp; conversion checks
+          in Services.
         </p>
       </div>
 
@@ -96,10 +103,15 @@ export const MerchantOnboardingCard: React.FC = () => {
         </div>
       )}
 
-      {completedAllSteps && !flaggedForReview && (
-        <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 p-4 rounded-lg flex items-center gap-3">
-          <CheckCircle2 className="w-5 h-5 shrink-0" />
-          <span className="font-medium text-sm">Onboarding pipeline complete.</span>
+      {entityMatchDone && !flaggedForReview && !needsGbpDraft && (
+        <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 p-4 rounded-lg flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <CheckCircle2 className="w-5 h-5 shrink-0" />
+            <span className="font-medium text-sm">Google Business Profile matched.</span>
+          </div>
+          <Link to="/merchant/store" className="text-sm font-medium underline underline-offset-2 ml-8">
+            Continue to My Store &rarr; add hours, lead time &amp; service types
+          </Link>
         </div>
       )}
 
@@ -143,7 +155,7 @@ export const MerchantOnboardingCard: React.FC = () => {
               placeholder="123 Main St..."
             />
           </div>
-          <div className="space-y-1.5 col-span-2">
+          <div className="space-y-1.5">
             <label className="text-sm font-medium">Phone</label>
             <input
               value={phone}
@@ -152,11 +164,22 @@ export const MerchantOnboardingCard: React.FC = () => {
               placeholder="+15551234567"
             />
           </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              placeholder="owner@store.com"
+            />
+          </div>
         </div>
 
         <button
           type="submit"
-          disabled={running || !storeName || !address}
+          disabled={running || !storeName || !address || !email}
           className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-medium py-2.5 rounded-md transition-colors mt-2 disabled:opacity-50 flex items-center justify-center gap-2"
         >
           {running ? <Loader2 className="w-4 h-4 animate-spin" /> : null}

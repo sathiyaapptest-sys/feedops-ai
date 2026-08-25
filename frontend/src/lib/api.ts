@@ -116,12 +116,13 @@ export const api = {
     const res = await fetch(`${API_BASE_URL}/api/places/search?query=${encodeURIComponent(query)}`);
     return res.json();
   },
-  /** Streams the real onboarding pipeline (EntityMatcher -> SchemaAuditor ->
-   * ConversionSentry). Requires a signed-in Firebase user -- /api/merchants/onboard
-   * is auth-protected; without a real session this will fail with a 401,
-   * surfaced via onEvent's error rather than silently. */
+  /** Streams the EntityMatcher stage only (Places resolution + agent review).
+   * store_id is assigned server-side from the authenticated user's email, so
+   * the client never needs to invent one. Requires a signed-in Firebase user --
+   * /api/merchants/onboard is auth-protected; without a real session this will
+   * fail with a 401, surfaced via onEvent's error rather than silently. */
   onboardMerchant: async (
-    merchant: { store_id: string; name: string; address: string; telephone?: string; latitude?: number; longitude?: number },
+    merchant: { name: string; address: string; telephone?: string; email?: string },
     onEvent: (event: any) => void
   ) => {
     const token = await getIdToken();
@@ -140,6 +141,40 @@ export const api = {
     for await (const event of streamSSE(res)) {
       onEvent(event);
     }
+  },
+  /** Streams the SchemaAuditor + ConversionSentry stage against the merchant's
+   * full saved record, including the real compiled entity/action/service feed
+   * JSON in the schema_compilation event's payload.feed_contents. */
+  auditMerchant: async (onEvent: (event: any) => void) => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/merchants/audit`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Audit request failed (${res.status}): ${text || res.statusText}`);
+    }
+    for await (const event of streamSSE(res)) {
+      onEvent(event);
+    }
+  },
+  /** Returns the last persisted feed audit (compiled feed content + conversion
+   * health) without re-running the agents, so revisiting the Services page
+   * shows the last real result instead of a blank slate. */
+  getMerchantAudit: async (): Promise<{
+    status: string;
+    compiled_feeds?: Record<string, any> | null;
+    feed_audit_reasoning?: string | null;
+    conversion_health?: Record<string, any> | null;
+    feeds_compiled_at?: any;
+    message?: string;
+  }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/merchants/audit`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
   },
   /** "Ask FeedOps" -- a question grounded in the real Actions Center playbook via RAG. */
   askSupport: async (question: string): Promise<{ answer: string; sources: { title: string; content: string }[] }> => {
