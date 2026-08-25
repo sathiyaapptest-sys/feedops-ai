@@ -37,7 +37,8 @@ class ConversionSentryTool:
         self.health_log: Dict[str, List[Dict[str, Any]]] = {}
 
     async def dispatch_conversion_ping(
-        self, environment: str = "sandbox", tokens: Optional[List[str]] = None, merchant_changed: int = 2
+        self, environment: str = "sandbox", tokens: Optional[List[str]] = None, merchant_changed: int = 2,
+        partner_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Dispatches synthetic conversion POST requests and records response code, latency,
@@ -47,6 +48,12 @@ class ConversionSentryTool:
         for production (there's no fixed "prod test token"; production conversions come
         from real customer clicks, so this only makes sense to call there with an actual
         token you captured). Defaults to the configured sandbox test tokens for sandbox.
+
+        `partner_id` overrides the GOOGLE_CONVERSION_PARTNER_ID env var -- lets a caller
+        (the aggregator dashboard's Conversion Tracking panel) use the numeric Partner ID
+        an aggregator saved in their own org config (API & Webhooks) instead of requiring
+        a server-wide environment variable, since a real deployment may serve more than
+        one aggregator org with different Partner IDs.
         """
         url = PRODUCTION_URL if environment == "production" else SANDBOX_URL
         tokens = tokens if tokens is not None else (self.sandbox_tokens if environment == "sandbox" else [])
@@ -56,7 +63,7 @@ class ConversionSentryTool:
                 "Production has no fixed test token -- pass the real captured rwg_token(s)."
             )
 
-        partner_id = os.getenv("GOOGLE_CONVERSION_PARTNER_ID")
+        partner_id = partner_id or os.getenv("GOOGLE_CONVERSION_PARTNER_ID")
         if not partner_id:
             raise ValueError(
                 "GOOGLE_CONVERSION_PARTNER_ID is not set. This is the numeric Partner/Aggregator "

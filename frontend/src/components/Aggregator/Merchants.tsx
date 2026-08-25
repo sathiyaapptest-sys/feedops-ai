@@ -33,10 +33,15 @@ export function Merchants() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-          <Layers className="w-6 h-6 text-blue-500" />
-          Merchants
-        </h1>
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <Layers className="w-6 h-6 text-blue-500" />
+            Merchants
+          </h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Validated merchants only -- matched automatically or approved in the Triage Queue.
+          </p>
+        </div>
         <input
           type="text"
           placeholder="Search by name or store id..."

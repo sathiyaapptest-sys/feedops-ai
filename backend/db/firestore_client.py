@@ -39,6 +39,7 @@ MERCHANTS_COLLECTION = os.getenv("FIRESTORE_MERCHANTS_COLLECTION", "merchants")
 ORGANIZATIONS_COLLECTION = os.getenv("FIRESTORE_ORGANIZATIONS_COLLECTION", "organizations")
 UPLOAD_BATCHES_COLLECTION = os.getenv("FIRESTORE_UPLOAD_BATCHES_COLLECTION", "upload_batches")
 MENUS_COLLECTION = os.getenv("FIRESTORE_MENUS_COLLECTION", "menus")
+CONVERSION_CHECKS_COLLECTION = os.getenv("FIRESTORE_CONVERSION_CHECKS_COLLECTION", "conversion_checks")
 
 # Lifecycle statuses a merchant document can hold.
 STATUS_NEW = "new"
@@ -389,12 +390,28 @@ class UploadBatchRepository:
         self.client = client or get_client()
 
     def create(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        feed_files is expected as the compiler's own {feed_type: path, ...} dict
+        (including the "*_descriptor" entries) rather than a flat list, so each
+        real feed type present (entity/action/service -- service is optional,
+        omitted entirely when no merchant has a real lead_time on file) gets its
+        own independently-trackable feed_status_{type} field, initialized to
+        pending. Google's Partner Portal shows per-file-type ingestion history,
+        not one blended status for the whole batch, so this mirrors that.
+        """
+        feed_types = sorted({
+            k for k in (batch.get("feed_files") or {}).keys() if not k.endswith("_descriptor")
+        })
+        feed_status_fields = {f"feed_status_{ft}": VERIFICATION_PENDING for ft in feed_types}
+
         batch = {
             **batch,
+            "feed_types": feed_types,
             "verification_status": VERIFICATION_PENDING,
             "verified_by": None,
             "verified_at": None,
             "verification_notes": None,
+            **feed_status_fields,
         }
         payload = {**batch, "created_at": SERVER_TIMESTAMP}
         self.client.set(UPLOAD_BATCHES_COLLECTION, batch["batch_id"], payload, merge=False)
@@ -418,6 +435,45 @@ class UploadBatchRepository:
             "verified_at": SERVER_TIMESTAMP,
             "verification_notes": notes,
         }, merge=True)
+
+    def mark_feed_status(self, batch_id: str, feed_type: str, status: str, verified_by: str) -> None:
+        """
+        Records a human's self-reported outcome for one feed type (entity/action/
+        service) within a batch. Writes three flat top-level fields (never a
+        nested map) so merge=True's field-mask-per-top-level-key semantics touch
+        only this feed type -- a nested {feed_status: {entity: ...}} map would
+        get merge=True'd as one field and silently wipe out the other feed
+        types' statuses already recorded in that same map.
+        """
+        self.client.set(UPLOAD_BATCHES_COLLECTION, batch_id, {
+            f"feed_status_{feed_type}": status,
+            f"feed_status_{feed_type}_by": verified_by,
+            f"feed_status_{feed_type}_at": SERVER_TIMESTAMP,
+        }, merge=True)
+
+
+class ConversionCheckRepository:
+    """
+    Firestore-backed history over the `conversion_checks` collection -- one
+    record per synthetic rwg_token conversion sweep (see
+    backend.tools.conversion_sentry.ConversionSentryTool), so the playbook's
+    "3 events / 7 days" launch-eligibility rule (section 7) can be checked
+    against real recorded runs instead of an in-memory log that resets
+    every time the process restarts (Cloud Run Jobs run as separate ephemeral
+    processes, so ConversionSentryTool's own in-memory health_log never
+    survives between weekly runs in production).
+    """
+
+    def __init__(self, client: Optional[_FirestoreRest] = None):
+        self.client = client or get_client()
+
+    def create(self, check: Dict[str, Any]) -> Dict[str, Any]:
+        payload = {**check, "created_at": SERVER_TIMESTAMP}
+        self.client.set(CONVERSION_CHECKS_COLLECTION, check["check_id"], payload, merge=False)
+        return check
+
+    def list_all(self) -> List[Dict[str, Any]]:
+        return self.client.list_all(CONVERSION_CHECKS_COLLECTION)
 
 
 def seed_from_snapshot(merchants: List[Dict[str, Any]], repo: Optional[MerchantRepository] = None) -> int:

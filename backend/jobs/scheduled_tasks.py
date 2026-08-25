@@ -32,14 +32,15 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from backend.tools.feed_compiler import ActionsCenterFeedCompiler
 from backend.tools.places_matcher import resolve_entity_match
 from backend.tools.sftp_uploader import GoogleSFTPClient
 from backend.tools.conversion_sentry import ConversionSentryTool
 from backend.db.firestore_client import (
-    MerchantRepository, STATUS_MATCHED, STATUS_EXCLUDED_CLOSED, UploadBatchRepository,
+    MerchantRepository, STATUS_EXCLUDED_CLOSED, UploadBatchRepository,
+    ConversionCheckRepository,
 )
 
 logger = logging.getLogger("feedops.jobs")
@@ -148,7 +149,20 @@ def _persist_guard_results(kept: List[Dict[str, Any]], excluded: List[Dict[str, 
     Skips merchants tagged _synthetic (sourced from the JSON snapshot fallback,
     not a real Firestore document) -- writing a status update under their
     fixture id would create a brand-new orphaned document with no name or
-    address, not update anything real."""
+    address, not update anything real.
+
+    A kept merchant's status is never touched here -- STATUS_MATCHED vs
+    STATUS_NEEDS_REVIEW vs STATUS_APPROVED is EntityMatcher's and the Triage
+    Queue's decision (confidence-gated), not this closed-merchant guard's. This
+    used to call update_status(..., STATUS_MATCHED, ...) unconditionally
+    whenever ANY place_id came back, which silently promoted every needs_review
+    merchant to "matched" on the very next feed push regardless of its real
+    confidence -- confirmed live: two merchants sitting at 31%/39% confidence
+    in the Triage Queue got flipped to "matched" this way. Only the place_id
+    is refreshed here (via upsert's merge, which leaves status alone since
+    it's not in the payload); only the EXCLUDED branch legitimately owns a
+    status transition, since "Google's own data marks this closed" really is
+    this guard's own call to make."""
     try:
         repo = MerchantRepository()
         for m in excluded:
@@ -160,7 +174,7 @@ def _persist_guard_results(kept: List[Dict[str, Any]], excluded: List[Dict[str, 
                 continue
             match = m.get("match_result") or {}
             if match.get("place_id"):
-                repo.update_status(m["store_id"], STATUS_MATCHED, extra={"place_id": match["place_id"]})
+                repo.upsert({"store_id": m["store_id"], "place_id": match["place_id"]})
     except Exception as e:
         logger.warning(f"Could not persist closed-merchant guard results to Firestore: {e}")
 
@@ -235,7 +249,7 @@ def run_daily_feed_push(environment: str = "sandbox", snapshot_path: str = DEFAU
             "merchant_ids": [m["id"] for m in merged],
             "merchant_count": len(merged),
             "excluded_count": len(excluded),
-            "feed_files": list(feed_bundle.values()),
+            "feed_files": feed_bundle,
             "upload_status": upload_result.get("status"),
             "dry_run": sftp.dry_run,
         })
@@ -259,28 +273,46 @@ def run_daily_feed_push(environment: str = "sandbox", snapshot_path: str = DEFAU
     return summary
 
 
-async def _dispatch_ping(environment: str) -> Dict[str, Any]:
-    return await ConversionSentryTool().dispatch_conversion_ping(environment)
+async def _dispatch_ping(environment: str, partner_id: Optional[str] = None) -> Dict[str, Any]:
+    return await ConversionSentryTool().dispatch_conversion_ping(environment, partner_id=partner_id)
 
 
-def run_weekly_conversion_sweep(environment: str = "sandbox") -> Dict[str, Any]:
+def run_weekly_conversion_sweep(environment: str = "sandbox", partner_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Playbook section 7: POST the sandbox test tokens (or prod token) so the rolling
     "3 events / 7 days" conversion-tracking check never lapses. Run this at least once
     a week per environment.
+
+    Persists every run to Firestore -- ConversionSentryTool's own health_log is
+    in-memory only, and Cloud Run Jobs run as separate ephemeral processes each
+    week, so that log never actually survives between runs in production. The
+    "3 events / 7 days" compliance check needs real history to compute against.
+
+    partner_id overrides the GOOGLE_CONVERSION_PARTNER_ID env var -- passed
+    through from an aggregator's own saved org config when called via the API
+    (see app.py's /api/conversion/check), falling back to the env var for the
+    scheduled Cloud Run Job invocation, which has no per-org context.
     """
     logger.info(f"Starting weekly conversion sweep ({environment})...")
-    response = _run_sync(_dispatch_ping(environment))
+    response = _run_sync(_dispatch_ping(environment, partner_id))
     results = response.get("results", [])
     all_ok = bool(results) and all(r.get("status_code") == 200 for r in results)
+    now = datetime.now(timezone.utc)
 
     summary = {
+        "check_id": f"{environment}-{int(now.timestamp())}",
         "environment": environment,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now.isoformat(),
         "tokens_pinged": len(results),
+        "successful_pings": sum(1 for r in results if r.get("success")),
         "all_ok": all_ok,
         "results": results,
     }
+    try:
+        ConversionCheckRepository().create(summary)
+    except Exception as e:
+        logger.warning(f"Could not record conversion check '{summary['check_id']}' to Firestore: {e}")
+
     if not all_ok:
         logger.error(f"Conversion sweep had failures: {summary}")
     else:

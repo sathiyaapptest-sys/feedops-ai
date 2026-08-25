@@ -151,6 +151,49 @@ export const api = {
     });
     return res.json();
   },
+  /** Records a human's self-reported acceptance status for ONE feed type
+   * (entity/action/service) within a batch -- Partner Portal shows per-file
+   * ingestion history, not one blended result for the whole batch. */
+  verifyBatchFeed: async (
+    batchId: string,
+    feedType: 'entity' | 'action' | 'service',
+    status: 'confirmed_clean' | 'flagged_errors'
+  ): Promise<{ status: string; batch_id?: string; feed_type?: string; feed_status?: string; message?: string }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/batches/${encodeURIComponent(batchId)}/verify-feed`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ feed_type: feedType, status }),
+    });
+    return res.json();
+  },
+  /** Runs the real synthetic conversion sweep (playbook section 7) on demand,
+   * using the Conversion Partner ID saved in the caller's own org config
+   * (API & Webhooks) if set. Auth-protected. */
+  triggerConversionCheck: async (environment: string = 'sandbox') => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/conversion/check?environment=${encodeURIComponent(environment)}`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
+  /** Conversion-check history plus whether the playbook's "3 events / 7 days"
+   * launch-eligibility rule is currently satisfied. */
+  getConversionChecks: async (): Promise<{
+    checks: any[];
+    compliant: boolean;
+    events_in_window: number;
+    window_days?: number;
+    min_events_required?: number;
+    error?: string;
+  }> => {
+    const res = await fetch(`${API_BASE_URL}/api/conversion/checks`);
+    return res.json();
+  },
   uploadMenuImage: async (file: File) => {
     const formData = new FormData();
     formData.append('file', file);

@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
@@ -26,9 +27,9 @@ from backend.db.firestore_client import (
     STATUS_NO_LISTING, STATUS_APPROVED, STATUS_REJECTED,
     OrganizationRepository, ORG_TYPE_MERCHANT, ORG_TYPE_AGGREGATOR, PORTAL_STATUS_NOT_STARTED,
     UploadBatchRepository, VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS,
-    MenuRepository,
+    MenuRepository, ConversionCheckRepository,
 )
-from backend.jobs.scheduled_tasks import run_daily_feed_push
+from backend.jobs.scheduled_tasks import run_daily_feed_push, run_weekly_conversion_sweep
 
 app = FastAPI(title="FeedOps AI Backend")
 
@@ -281,11 +282,18 @@ async def get_merchant_audit(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/merchants")
 async def list_merchants():
-    """Full merchant directory -- every record in the merchants collection
-    regardless of status, for the aggregator's Merchants page. The triage
-    queue below only ever shows the narrower needs_review slice."""
+    """
+    Validated merchant directory for the aggregator's Merchants page -- only
+    merchants that have actually cleared entity matching (status matched, a
+    high-confidence automatic Places match, or approved, a human's Triage
+    Queue decision on an ambiguous one). A merchant still needs_review or
+    unresolved isn't real inventory yet; it belongs in the Triage Queue until
+    someone acts on it, not in the roster of merchants actually being served.
+    """
     try:
-        return {"merchants": MerchantRepository().list_all()}
+        merchants = MerchantRepository().list_all()
+        validated = [m for m in merchants if m.get("status") in (STATUS_MATCHED, STATUS_APPROVED)]
+        return {"merchants": validated}
     except Exception as e:
         return {"merchants": [], "error": str(e)}
 
@@ -382,6 +390,102 @@ async def verify_batch(batch_id: str, payload: BatchVerifyIn, current_user: dict
         return {"status": "recorded", "batch_id": batch_id, "verification_status": payload.status}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+class FeedVerifyIn(BaseModel):
+    feed_type: str  # "entity" | "action" | "service"
+    status: str  # "confirmed_clean" | "flagged_errors"
+
+@app.post("/api/batches/{batch_id}/verify-feed")
+async def verify_batch_feed(batch_id: str, payload: FeedVerifyIn, current_user: dict = Depends(get_current_user)):
+    """
+    Records a human's self-reported acceptance status for one feed type (entity,
+    action, or service) within a batch -- Partner Portal -> Ingestion -> History
+    shows per-file-type status, not one blended result for the whole batch, so
+    an aggregator can mark e.g. "action accepted, service flagged" instead of
+    one verdict covering files that may not have all landed the same way.
+    """
+    if payload.status not in (VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS):
+        return {
+            "status": "error",
+            "message": f"status must be '{VERIFICATION_CONFIRMED_CLEAN}' or '{VERIFICATION_FLAGGED_ERRORS}'.",
+        }
+    try:
+        verified_by = current_user.get("email") or current_user.get("uid", "unknown")
+        UploadBatchRepository().mark_feed_status(batch_id, payload.feed_type, payload.status, verified_by)
+        return {"status": "recorded", "batch_id": batch_id, "feed_type": payload.feed_type, "feed_status": payload.status}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+CONVERSION_COMPLIANCE_MIN_EVENTS = 3
+CONVERSION_COMPLIANCE_WINDOW_DAYS = 7
+
+@app.post("/api/conversion/check")
+async def trigger_conversion_check(environment: str = "sandbox", current_user: dict = Depends(get_current_user)):
+    """
+    Runs the real synthetic conversion sweep (playbook section 7) on demand,
+    for an aggregator to submit outside the weekly scheduled cadence. Uses the
+    numeric Conversion Partner ID the aggregator saved in their own org config
+    (API & Webhooks) if they've set one, falling back to the
+    GOOGLE_CONVERSION_PARTNER_ID env var otherwise (what the scheduled Cloud
+    Run Job uses, which has no per-org context).
+
+    Unlike run_daily_feed_push (which never raises -- every internal failure
+    is individually caught and folded into its summary dict),
+    dispatch_conversion_ping raises outright when no partner id is available
+    from either source, a real and expected setup gap before an aggregator has
+    filled in API & Webhooks -- caught here so that shows up as a clear error
+    the frontend can render, not a raw connection failure.
+    """
+    partner_id = None
+    org_id = current_user.get("uid")
+    if org_id:
+        try:
+            org = OrganizationRepository().get(org_id)
+            partner_id = (org or {}).get("config", {}).get("conversion_partner_id") or None
+        except Exception as e:
+            logger.warning(f"Could not load org config for '{org_id}': {e}")
+
+    try:
+        summary = await asyncio.to_thread(run_weekly_conversion_sweep, environment, partner_id)
+        return summary
+    except Exception as e:
+        return {"all_ok": False, "tokens_pinged": 0, "successful_pings": 0, "error": str(e)}
+
+@app.get("/api/conversion/checks")
+async def list_conversion_checks():
+    """
+    Conversion-tracking history plus whether the playbook's "3 events / 7 days"
+    launch-eligibility rule (section 7) is currently satisfied -- counted from
+    real recorded sweep runs, not the in-memory log ConversionSentryTool itself
+    keeps (which doesn't survive between separate Cloud Run Job executions).
+    """
+    try:
+        checks = ConversionCheckRepository().list_all()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=CONVERSION_COMPLIANCE_WINDOW_DAYS)
+
+        def _within_window(c: Dict[str, Any]) -> bool:
+            ts = c.get("timestamp")
+            if not ts:
+                return False
+            try:
+                return datetime.fromisoformat(ts.replace("Z", "+00:00")) >= cutoff
+            except ValueError:
+                return False
+
+        recent = [c for c in checks if _within_window(c)]
+        events_in_window = sum(c.get("successful_pings", 0) for c in recent)
+        compliant = events_in_window >= CONVERSION_COMPLIANCE_MIN_EVENTS
+
+        checks_sorted = sorted(checks, key=lambda c: c.get("timestamp") or "", reverse=True)
+        return {
+            "checks": checks_sorted,
+            "compliant": compliant,
+            "events_in_window": events_in_window,
+            "window_days": CONVERSION_COMPLIANCE_WINDOW_DAYS,
+            "min_events_required": CONVERSION_COMPLIANCE_MIN_EVENTS,
+        }
+    except Exception as e:
+        return {"checks": [], "compliant": False, "events_in_window": 0, "error": str(e)}
 
 @app.post("/api/support/ask")
 async def ask_support(request: Request):
