@@ -279,6 +279,16 @@ async def get_merchant_audit(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/merchants")
+async def list_merchants():
+    """Full merchant directory -- every record in the merchants collection
+    regardless of status, for the aggregator's Merchants page. The triage
+    queue below only ever shows the narrower needs_review slice."""
+    try:
+        return {"merchants": MerchantRepository().list_all()}
+    except Exception as e:
+        return {"merchants": [], "error": str(e)}
+
 @app.get("/api/triage/queue")
 async def get_triage_queue():
     """Returns merchants flagged for manual review (< 90% Places match confidence)."""

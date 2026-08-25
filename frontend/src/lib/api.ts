@@ -55,6 +55,63 @@ export const api = {
     const res = await fetch(`${API_BASE_URL}/api/triage/queue`);
     return res.json();
   },
+  /** Full merchant directory (every status), for the aggregator's Merchants page. */
+  listMerchants: async (): Promise<{ merchants: any[]; error?: string }> => {
+    const res = await fetch(`${API_BASE_URL}/api/merchants`);
+    return res.json();
+  },
+  /** Reads one organization's record (config, portal status). Auth-protected. */
+  getOrganization: async (orgId: string): Promise<{ status: string; org?: any; message?: string }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/organizations/${encodeURIComponent(orgId)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
+  /** Creates an organization record (used to lazily create the aggregator's own
+   * org the first time they open API & Webhooks -- there's no separate org
+   * creation wizard). Auth-protected. */
+  createOrganization: async (payload: {
+    org_id: string;
+    org_type: 'merchant' | 'aggregator';
+    name: string;
+    contact_email: string;
+    goal: string;
+  }): Promise<{ status: string; org?: any; message?: string }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/organizations`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  },
+  /** Saves an organization's Partner Portal config (SFTP usernames, conversion
+   * partner ID, per-environment setup status). Auth-protected. */
+  updateOrganizationConfig: async (
+    orgId: string,
+    config: {
+      sftp_username_sandbox?: string;
+      sftp_username_production?: string;
+      conversion_partner_id?: string;
+      portal_status_sandbox?: string;
+      portal_status_production?: string;
+    }
+  ): Promise<{ status: string; config?: any; message?: string }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/organizations/${encodeURIComponent(orgId)}/config`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(config),
+    });
+    return res.json();
+  },
   resolveTriage: async (id: string, action: string) => {
     const res = await fetch(`${API_BASE_URL}/api/triage/resolve`, {
       method: 'POST',

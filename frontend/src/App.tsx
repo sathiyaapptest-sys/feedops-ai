@@ -7,6 +7,8 @@ import { TriageQueue } from './components/Aggregator/TriageQueue';
 import { BulkUpload } from './components/Aggregator/BulkUpload';
 import { BulkMenuUpload } from './components/Aggregator/BulkMenuUpload';
 import { FeedHealth } from './components/Aggregator/FeedHealth';
+import { Merchants } from './components/Aggregator/Merchants';
+import { ApiWebhooks } from './components/Aggregator/ApiWebhooks';
 import { MyStore } from './components/Merchant/MyStore';
 import { Menu } from './components/Merchant/Menu';
 import { Services } from './components/Merchant/Services';
@@ -26,6 +28,7 @@ function App() {
         
         {/* Protected Routes (Aggregator) */}
         <Route path="/aggregator" element={<AggregatorLayout />}>
+          <Route index element={<Navigate to="/aggregator/dashboard" replace />} />
           <Route path="dashboard" element={
             <div className="space-y-6">
               <ReadinessScorecard />
@@ -37,6 +40,8 @@ function App() {
               </div>
             </div>
           } />
+          <Route path="merchants" element={<Merchants />} />
+          <Route path="webhooks" element={<ApiWebhooks />} />
         </Route>
 
         {/* Protected Routes (Merchant) */}
