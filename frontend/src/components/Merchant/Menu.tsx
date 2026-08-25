@@ -357,9 +357,13 @@ export function Menu() {
               </div>
             )}
 
-            <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+            {/* Bounded height + its own scroll, rather than letting the
+                whole page grow with the menu -- a 20+ item menu was
+                pushing Validate/Save to Database far down the page,
+                needing a full-page scroll just to reach them. */}
+            <div className="max-h-[420px] overflow-y-auto overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
               <table className="w-full text-left text-sm text-slate-700 dark:text-slate-300">
-                <thead className="bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white uppercase font-medium text-xs">
+                <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white uppercase font-medium text-xs">
                   <tr>
                     <th className="px-4 py-3">Name</th>
                     <th className="px-4 py-3">Price</th>
