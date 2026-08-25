@@ -5,14 +5,32 @@ Merchant records are the system of record for the daily feed push, the HITL
 triage queue, and the launch-readiness scorecard. This is deliberately a thin
 repository over plain Firestore documents (no ORM) so the query shapes stay
 obvious and match what the FastAPI routes and scheduled jobs actually need.
+
+Talks to Firestore over raw authenticated REST rather than the
+google-cloud-firestore SDK. Root cause, found via a temporary debug endpoint
+that dumped full exception/traceback (the app's normal error handling only
+ever surfaced str(e), which wasn't enough to diagnose this): every SDK call
+-- gRPC (the default transport) AND the SDK's own REST transport, across
+google-cloud-firestore 2.28.1 and 2.29.0 alike -- failed in production with
+"400 Invalid database id (default)" specifically when authenticated as Cloud
+Run's native service-account credentials (Compute Engine-style, from the
+metadata server). The identical code, identical database, identical service
+account (tested via impersonation) worked perfectly locally. Raw authenticated
+REST calls (google.auth.transport.requests.AuthorizedSession, no SDK
+involved) work correctly in every case tested, including the exact failing
+Cloud Run environment -- confirmed live before this rewrite. See
+backend/rag/playbook_index.py for the one remaining piece still on the SDK
+(vector search has no REST reimplementation here yet -- a known, scoped-out
+gap, not an oversight).
 """
 
+import datetime
 import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from google.cloud import firestore
-from google.cloud.firestore_v1.base_query import FieldFilter
+import google.auth
+import google.auth.transport.requests
 
 logger = logging.getLogger("feedops.db")
 
@@ -48,53 +66,171 @@ VERIFICATION_PENDING = "pending"
 VERIFICATION_CONFIRMED_CLEAN = "confirmed_clean"
 VERIFICATION_FLAGGED_ERRORS = "flagged_errors"
 
+# A stand-in for firestore.SERVER_TIMESTAMP -- pass this in a payload's value
+# and it's replaced with the current UTC time at write time. Client-side, not
+# server-authoritative like the SDK's real sentinel, which is fine here: every
+# use in this file is bookkeeping ("when was this last touched"), not
+# anything needing microsecond server-clock precision.
+SERVER_TIMESTAMP = object()
 
-def get_client() -> "firestore.Client":
-    """
-    Returns a Firestore client using Application Default Credentials (a service
-    account on Cloud Run, or `gcloud auth application-default login` locally).
-    Set FIRESTORE_EMULATOR_HOST to point this at a local emulator instead.
+_FIRESTORE_BASE = "https://firestore.googleapis.com/v1"
 
-    Deliberately does NOT call firebase_admin.initialize_app() here. This
-    module only ever needs google.cloud.firestore -- firebase_admin is a
-    separate SDK, initialized independently by backend/server/auth.py for
-    token verification, so this module has no real dependency on it.
-    Removed after a real production bug: "400 Invalid database id (default)"
-    on every Firestore call from Cloud Run, despite `gcloud firestore
-    databases list` confirming the database is healthy and correctly named,
-    AND the exact same client construction (including explicit
-    database="(default)") succeeding both with real user ADC and with
-    impersonated feedops-run credentials when tested locally. The one
-    remaining difference was this redundant firebase_admin.initialize_app()
-    call running first inside Cloud Run's own metadata-server credential
-    path -- removed as the next targeted fix.
-    """
-    return firestore.Client(database="(default)")
+
+class _FirestoreRest:
+    """Minimal Firestore REST client covering exactly what this file's
+    repositories need: get/set a document, list a collection, and a single
+    equality where-filter. See module docstring for why this exists instead
+    of the google-cloud-firestore SDK."""
+
+    def __init__(self, project: Optional[str] = None):
+        credentials, default_project = google.auth.default()
+        self._session = google.auth.transport.requests.AuthorizedSession(credentials)
+        self.project = project or default_project
+        self._base = f"{_FIRESTORE_BASE}/projects/{self.project}/databases/(default)/documents"
+
+    # ---- Firestore <-> Python value (de)serialization ----
+
+    def _to_value(self, v: Any) -> Dict[str, Any]:
+        if v is SERVER_TIMESTAMP:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            return {"timestampValue": now.isoformat().replace("+00:00", "Z")}
+        if v is None:
+            return {"nullValue": None}
+        if isinstance(v, bool):
+            return {"booleanValue": v}
+        if isinstance(v, int):
+            return {"integerValue": str(v)}
+        if isinstance(v, float):
+            return {"doubleValue": v}
+        if isinstance(v, str):
+            return {"stringValue": v}
+        if isinstance(v, dict):
+            return {"mapValue": {"fields": {k: self._to_value(val) for k, val in v.items()}}}
+        if isinstance(v, (list, tuple)):
+            return {"arrayValue": {"values": [self._to_value(item) for item in v]}}
+        if isinstance(v, datetime.datetime):
+            return {"timestampValue": v.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z")}
+        # Unrecognized type (e.g. an unexpected object) -- stringify rather
+        # than silently drop the field.
+        return {"stringValue": str(v)}
+
+    def _from_value(self, v: Dict[str, Any]) -> Any:
+        if "nullValue" in v:
+            return None
+        if "booleanValue" in v:
+            return v["booleanValue"]
+        if "integerValue" in v:
+            return int(v["integerValue"])
+        if "doubleValue" in v:
+            return v["doubleValue"]
+        if "stringValue" in v:
+            return v["stringValue"]
+        if "timestampValue" in v:
+            return v["timestampValue"]
+        if "mapValue" in v:
+            return {k: self._from_value(val) for k, val in v.get("mapValue", {}).get("fields", {}).items()}
+        if "arrayValue" in v:
+            return [self._from_value(item) for item in v.get("arrayValue", {}).get("values", [])]
+        return None
+
+    def _doc_to_dict(self, doc_json: Dict[str, Any]) -> Dict[str, Any]:
+        fields = doc_json.get("fields", {})
+        return {k: self._from_value(v) for k, v in fields.items()}
+
+    # ---- operations ----
+
+    def get(self, collection: str, doc_id: str) -> Optional[Dict[str, Any]]:
+        resp = self._session.get(f"{self._base}/{collection}/{doc_id}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return self._doc_to_dict(resp.json())
+
+    def set(self, collection: str, doc_id: str, data: Dict[str, Any], merge: bool = False) -> None:
+        fields = {k: self._to_value(v) for k, v in data.items()}
+        params: List[tuple] = []
+        if merge:
+            for key in data.keys():
+                params.append(("updateMask.fieldPaths", key))
+        resp = self._session.patch(
+            f"{self._base}/{collection}/{doc_id}",
+            json={"fields": fields},
+            params=params,
+        )
+        resp.raise_for_status()
+
+    def list_all(self, collection: str) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+        while True:
+            params = {"pageSize": 300}
+            if page_token:
+                params["pageToken"] = page_token
+            resp = self._session.get(f"{self._base}/{collection}", params=params)
+            resp.raise_for_status()
+            body = resp.json()
+            results.extend(self._doc_to_dict(doc) for doc in body.get("documents", []))
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                break
+        return results
+
+    def query_equals(self, collection: str, field: str, value: Any) -> List[Dict[str, Any]]:
+        body = {
+            "structuredQuery": {
+                "from": [{"collectionId": collection}],
+                "where": {
+                    "fieldFilter": {
+                        "field": {"fieldPath": field},
+                        "op": "EQUAL",
+                        "value": self._to_value(value),
+                    }
+                },
+            }
+        }
+        resp = self._session.post(f"{self._base}:runQuery", json=body)
+        resp.raise_for_status()
+        results = []
+        for chunk in resp.json():
+            doc = chunk.get("document")
+            if doc:
+                results.append(self._doc_to_dict(doc))
+        return results
+
+
+_client_singleton: Optional[_FirestoreRest] = None
+
+
+def get_client() -> _FirestoreRest:
+    """Returns a shared Firestore REST client using Application Default
+    Credentials (a service account on Cloud Run, or `gcloud auth
+    application-default login` locally)."""
+    global _client_singleton
+    if _client_singleton is None:
+        _client_singleton = _FirestoreRest()
+    return _client_singleton
 
 
 class MerchantRepository:
     """Firestore-backed CRUD + queries over the `merchants` collection."""
 
-    def __init__(self, client: Optional["firestore.Client"] = None):
+    def __init__(self, client: Optional[_FirestoreRest] = None):
         self.client = client or get_client()
-        self.collection = self.client.collection(MERCHANTS_COLLECTION)
 
     def upsert(self, merchant: Dict[str, Any]) -> None:
         """Creates or updates a merchant document, keyed by its store_id."""
         store_id = merchant["store_id"]
-        payload = {**merchant, "updated_at": firestore.SERVER_TIMESTAMP}
-        self.collection.document(store_id).set(payload, merge=True)
+        payload = {**merchant, "updated_at": SERVER_TIMESTAMP}
+        self.client.set(MERCHANTS_COLLECTION, store_id, payload, merge=True)
 
     def get(self, store_id: str) -> Optional[Dict[str, Any]]:
-        snapshot = self.collection.document(store_id).get()
-        return snapshot.to_dict() if snapshot.exists else None
+        return self.client.get(MERCHANTS_COLLECTION, store_id)
 
     def list_all(self) -> List[Dict[str, Any]]:
-        return [doc.to_dict() for doc in self.collection.stream()]
+        return self.client.list_all(MERCHANTS_COLLECTION)
 
     def list_by_status(self, status: str) -> List[Dict[str, Any]]:
-        query = self.collection.where(filter=FieldFilter("status", "==", status))
-        return [doc.to_dict() for doc in query.stream()]
+        return self.client.query_equals(MERCHANTS_COLLECTION, "status", status)
 
     def list_active(self) -> List[Dict[str, Any]]:
         """Merchants eligible to appear in the daily feed push."""
@@ -102,10 +238,10 @@ class MerchantRepository:
         return [m for m in self.list_all() if m.get("status") not in excluded_statuses]
 
     def update_status(self, store_id: str, status: str, extra: Optional[Dict[str, Any]] = None) -> None:
-        payload = {"status": status, "updated_at": firestore.SERVER_TIMESTAMP}
+        payload = {"status": status, "updated_at": SERVER_TIMESTAMP}
         if extra:
             payload.update(extra)
-        self.collection.document(store_id).set(payload, merge=True)
+        self.client.set(MERCHANTS_COLLECTION, store_id, payload, merge=True)
 
     def readiness_summary(self) -> Dict[str, Any]:
         """Counts backing the launch-readiness scorecard, computed from real documents."""
@@ -139,32 +275,32 @@ class OrganizationRepository:
     remembered instead of re-guessed on every upload.
     """
 
-    def __init__(self, client: Optional["firestore.Client"] = None):
+    def __init__(self, client: Optional[_FirestoreRest] = None):
         self.client = client or get_client()
-        self.collection = self.client.collection(ORGANIZATIONS_COLLECTION)
 
     def create(self, org: Dict[str, Any]) -> Dict[str, Any]:
         org_id = org["org_id"]
-        payload = {**org, "created_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP}
-        self.collection.document(org_id).set(payload)
+        payload = {**org, "created_at": SERVER_TIMESTAMP, "updated_at": SERVER_TIMESTAMP}
+        self.client.set(ORGANIZATIONS_COLLECTION, org_id, payload, merge=False)
         return org
 
     def get(self, org_id: str) -> Optional[Dict[str, Any]]:
-        snapshot = self.collection.document(org_id).get()
-        return snapshot.to_dict() if snapshot.exists else None
+        return self.client.get(ORGANIZATIONS_COLLECTION, org_id)
 
     def update_config(self, org_id: str, config: Dict[str, Any]) -> None:
         """Merges into the org's `config` map -- SFTP username(s), conversion
         partner ID, portal setup status per environment."""
         existing = self.get(org_id) or {}
         merged_config = {**existing.get("config", {}), **config}
-        self.collection.document(org_id).set(
-            {"config": merged_config, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True
+        self.client.set(
+            ORGANIZATIONS_COLLECTION, org_id,
+            {"config": merged_config, "updated_at": SERVER_TIMESTAMP}, merge=True,
         )
 
     def save_adapter(self, org_id: str, adapter: Dict[str, Any]) -> None:
-        self.collection.document(org_id).set(
-            {"adapter": adapter, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True
+        self.client.set(
+            ORGANIZATIONS_COLLECTION, org_id,
+            {"adapter": adapter, "updated_at": SERVER_TIMESTAMP}, merge=True,
         )
 
     def get_adapter(self, org_id: str) -> Optional[Dict[str, Any]]:
@@ -186,9 +322,8 @@ class UploadBatchRepository:
     records what a human reports after doing that check themselves.
     """
 
-    def __init__(self, client: Optional["firestore.Client"] = None):
+    def __init__(self, client: Optional[_FirestoreRest] = None):
         self.client = client or get_client()
-        self.collection = self.client.collection(UPLOAD_BATCHES_COLLECTION)
 
     def create(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         batch = {
@@ -198,28 +333,26 @@ class UploadBatchRepository:
             "verified_at": None,
             "verification_notes": None,
         }
-        payload = {**batch, "created_at": firestore.SERVER_TIMESTAMP}
-        self.collection.document(batch["batch_id"]).set(payload)
+        payload = {**batch, "created_at": SERVER_TIMESTAMP}
+        self.client.set(UPLOAD_BATCHES_COLLECTION, batch["batch_id"], payload, merge=False)
         return batch
 
     def get(self, batch_id: str) -> Optional[Dict[str, Any]]:
-        snapshot = self.collection.document(batch_id).get()
-        return snapshot.to_dict() if snapshot.exists else None
+        return self.client.get(UPLOAD_BATCHES_COLLECTION, batch_id)
 
     def list_all(self) -> List[Dict[str, Any]]:
-        return [doc.to_dict() for doc in self.collection.stream()]
+        return self.client.list_all(UPLOAD_BATCHES_COLLECTION)
 
     def list_pending_verification(self) -> List[Dict[str, Any]]:
-        query = self.collection.where(filter=FieldFilter("verification_status", "==", VERIFICATION_PENDING))
-        return [doc.to_dict() for doc in query.stream()]
+        return self.client.query_equals(UPLOAD_BATCHES_COLLECTION, "verification_status", VERIFICATION_PENDING)
 
     def mark_verified(self, batch_id: str, status: str, verified_by: str, notes: Optional[str] = None) -> None:
         """Records a human's self-reported outcome of manually checking Partner
         Portal -> Ingestion -> History. Never calls Google -- there's no API to."""
-        self.collection.document(batch_id).set({
+        self.client.set(UPLOAD_BATCHES_COLLECTION, batch_id, {
             "verification_status": status,
             "verified_by": verified_by,
-            "verified_at": firestore.SERVER_TIMESTAMP,
+            "verified_at": SERVER_TIMESTAMP,
             "verification_notes": notes,
         }, merge=True)
 

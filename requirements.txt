@@ -9,6 +9,15 @@ httpx==0.28.1
 google-adk==2.7.1
 google-genai==2.19.0
 firebase-admin==7.5.0
+# backend/db/firestore_client.py no longer uses this SDK's Client for reads/
+# writes (see that file's module docstring for why -- a real production bug
+# where every SDK call, gRPC or REST, failed with "400 Invalid database id
+# (default)" specifically under Cloud Run's native service-account
+# credentials, reproducing across multiple SDK versions). Still a real
+# dependency: backend/rag/playbook_index.py uses this SDK's Vector /
+# DistanceMeasure types for vector search (a narrower, scoped-out gap --
+# RAG grounding degrades gracefully to "no context" rather than crashing).
+google-cloud-firestore==2.28.1
 
 # Feed delivery + tooling
 paramiko==5.0.0
