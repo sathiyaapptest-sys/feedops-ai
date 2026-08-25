@@ -23,8 +23,8 @@ Restaurant aggregators and merchants who want an "Order Online" button on Google
   - **SchemaAuditor** — compiles and audits a merchant's feed, grounded in the real integration playbook via RAG.
   - **ConversionSentry** — dispatches and interprets conversion-tracking pings.
   - **Support** — the "Ask FeedOps" surface.
-- **Firestore** (`backend/db/firestore_client.py`) — system of record for merchant status, organization config, and upload batch history. No ORM; thin repositories over plain documents.
-- **RAG** (`backend/rag/playbook_index.py`) — chunks the internal domain playbook by section, embeds with Gemini, retrieves via Firestore's native vector search. Grounds the SchemaAuditor agent and Ask FeedOps. The raw playbook document itself is intentionally excluded from this repository (see below) — only its already-built vector index is queried at runtime.
+- **Firestore** (`backend/db/firestore_client.py`) — system of record for merchant status, organization config, and upload batch history. No ORM; thin repositories over plain documents, talking to Firestore over raw authenticated REST (not the `google-cloud-firestore` SDK — see that file's docstring for the production bug that forced this).
+- **RAG** (`backend/rag/playbook_index.py`) — chunks the internal domain playbook by section, embeds with Gemini, and holds the vectors in an in-process cache (rebuilt from the Docker-bundled file on process start, no external index to provision). Grounds the SchemaAuditor agent and Ask FeedOps. The raw playbook document itself is intentionally excluded from this repository (see below), but *is* baked into the deployed container — that's what the in-memory index chunks at runtime.
 - **An MCP server** (`backend/tools/mcp_server.py`) — exposes 8 of the same backend tools (Places search, storefront verification, feed compilation, SFTP upload, conversion pings, menu/spreadsheet extraction) over the real Model Context Protocol via stdio transport, independent of the FastAPI app, so any MCP-compatible client can drive the same tool surface.
 - **Scheduled jobs** (`backend/jobs/scheduled_tasks.py`) — daily feed push (closed-merchant guard → compile → upload) and weekly conversion sweep, designed as Cloud Run Jobs on Cloud Scheduler crons.
 - **Data adapters** (`backend/tools/data_adapter.py`) — per-organization column-mapping for bulk uploads, saved and reused, with structured per-row validation errors instead of silent guessing.
@@ -32,7 +32,7 @@ Restaurant aggregators and merchants who want an "Order Online" button on Google
 
 ## Why the playbook isn't in this repo
 
-`GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md` — the reverse-engineered domain spec this project's RAG grounding and feed compiler are built against — is real, hard-won competitive-advantage content, not scaffolding. It's excluded from version control entirely: kept on the maintainers' local disk and indexed into Firestore, never pushed to a repo any collaborator would see. This does **not** affect how the app runs — the RAG pipeline only reads the raw file at index-build time (`fixtures/seed_playbook_index.py`); every runtime query (SchemaAuditor, Ask FeedOps) goes through the already-built Firestore vector index, never the file itself. The code implementing that pipeline — chunking, embedding, retrieval, citation — is fully present and reviewable in `backend/rag/`.
+`GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md` — the reverse-engineered domain spec this project's RAG grounding and feed compiler are built against — is real, hard-won competitive-advantage content, not scaffolding. It's excluded from version control entirely (`.gitignore`) but *is* copied into the deployed Docker image (`.gcloudignore` deliberately does not exclude it, and the Dockerfile `COPY`s it explicitly) — so it's on the maintainers' local disk and inside the running container, never in a repo any collaborator would see. The RAG pipeline (`backend/rag/playbook_index.py`) chunks and embeds that bundled file into an in-memory index the first time a query needs it in each process — no separate build step, no external vector database to provision. The code implementing that pipeline — chunking, embedding, retrieval, citation — is fully present and reviewable in `backend/rag/`.
 
 ## Tech stack
 
@@ -41,7 +41,7 @@ Restaurant aggregators and merchants who want an "Order Online" button on Google
 | LLM | Gemini 3.6 Flash / 3.7 Flash (`google-genai`) |
 | Agent framework | Google ADK (`google-adk`) — 4 agents, real `Runner` execution |
 | Tool protocol | MCP (`mcp[cli]`) — a standalone server alongside the ADK agents |
-| Database | Firestore (Firebase Admin SDK) — merchant records, org config, upload history, RAG vector index |
+| Database | Firestore (raw authenticated REST, no SDK) — merchant records, org config, upload history |
 | Compute | Cloud Run (web service + scheduled jobs), Cloud Build, Cloud Scheduler |
 | Backend | FastAPI, Python 3.11 |
 | Frontend | React 18, Vite, TypeScript, Tailwind, Firebase Auth + client SDK |
@@ -64,7 +64,7 @@ frontend/
   src/components/Merchant/     Self-service store profile, menu, services
   src/components/Customer/     Public storefront view
 deploy/          Dockerfile.jobs, Cloud Build config, deployment instructions
-fixtures/        One-time Firestore/RAG seeding scripts
+fixtures/        One-time Firestore seeding scripts (demo data, golden dataset)
 ```
 
 ## Getting started
@@ -87,11 +87,7 @@ python run.py           # serves on http://localhost:8000, /docs for the API
 
 Optional env vars for features that degrade gracefully without them (mock/dry-run fallback, never a crash): `GOOGLE_PLACES_API_KEY`, `GOOGLE_SFTP_USERNAME` / `GOOGLE_SFTP_KEY_PATH`, `GOOGLE_CONVERSION_PARTNER_ID`, `GEMINI_MODEL` (defaults to `gemini-3.6-flash` — the `gemini-flash-latest` alias is unreliable in practice).
 
-To ground SchemaAuditor / Ask FeedOps in real RAG output, build the Firestore vector index once (needs a Firestore vector index created first — see [deploy/README.md](deploy/README.md)):
-
-```bash
-python -m fixtures.seed_playbook_index
-```
+SchemaAuditor / Ask FeedOps ground themselves in real RAG output automatically — `GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md` is chunked and embedded into an in-memory index the first time a query needs it, no separate build step or Firestore vector index required. You just need the file present locally (see [Why the playbook isn't in this repo](#why-the-playbook-isnt-in-this-repo)) and a working `GEMINI_API_KEY`.
 
 ### Frontend
 
@@ -111,7 +107,7 @@ Runs over stdio — connect it from any MCP-compatible client (e.g. Claude Deskt
 
 ### Deploying to Cloud Run
 
-See [deploy/README.md](deploy/README.md) for the full `gcloud run deploy` commands, service account IAM setup, and the Firestore vector index creation command. Requires your own authenticated `gcloud` session — nothing in this repo can create GCP infrastructure on its own.
+See [deploy/README.md](deploy/README.md) for the full `gcloud run deploy` commands and service account IAM setup. Requires your own authenticated `gcloud` session — nothing in this repo can create GCP infrastructure on its own.
 
 ## Known gaps and honest limitations
 

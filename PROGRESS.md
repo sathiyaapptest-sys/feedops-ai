@@ -33,8 +33,9 @@ grind for restaurant aggregators.
   `OrganizationRepository`, `UploadBatchRepository`. System of record for
   merchant status, org config/adapters, and upload history.
 - **RAG** (`backend/rag/playbook_index.py`): chunks the playbook by section,
-  embeds with Gemini, retrieves via Firestore vector search. Grounds
-  SchemaAuditor and the Support agent.
+  embeds with Gemini, holds vectors in an in-process cache (built from the
+  Docker-bundled file on first use, no Firestore vector index needed).
+  Grounds SchemaAuditor and the Support agent.
 - **Scheduled jobs** (`backend/jobs/scheduled_tasks.py`): daily feed push
   (closed-merchant guard + compile + SFTP upload) and weekly conversion
   sweep, deployable as Cloud Run Jobs on Cloud Scheduler crons
@@ -74,15 +75,19 @@ grind for restaurant aggregators.
 - **`Menu.tsx`'s XLSX-upload path expects the wrong response shape** from
   `/api/upload/spreadsheet` (expects `.menu`/`.sections`, actual shape is
   `{merchants, menus}`) — pre-existing, not introduced this session.
-- **Services page's live agent stream is still canned** (`/api/agent/stream`
-  was never wired to the real pipeline) — the onboarding page's stream is
-  real; this one, deliberately left out of scope, is not.
-- **No architecture diagram, no hackathon-facing README, no demo video, no
-  pushed remote repo yet** — deliberately held until the flow is fully
-  tested and stable (current phase).
-- Firestore vector index for RAG retrieval needs to be created manually in
-  the real GCP project (`deploy/README.md` has the exact command) — nothing
-  retrieves until it exists.
+- **No architecture diagram, no demo video** — still outstanding.
+- Onboarding is now split across three pages by pipeline stage: Onboard
+  Store runs EntityMatcher only (name/phone/email/address, keyed by the
+  signed-in user's email); My Store collects hours/lead-time/service-types
+  into the same `merchants/{email}` record; Services runs the real
+  SchemaAuditor + ConversionSentry via `/api/merchants/audit` and displays
+  the actual compiled entity/action/service feed JSON, persisted so
+  revisiting the page shows the last real run. The old fake
+  `AgentStreamViewer` / `/api/agent/stream` canned stream is gone.
+- RAG retrieval no longer depends on a Firestore vector index at all — see
+  the RAG bullet above; this was fixed after the earlier Firestore SDK
+  rewrite left `playbook_index.py` on the one remaining broken code path
+  (`.collection()` calls against a client that no longer supports them).
 
 ## Environment notes for next time
 

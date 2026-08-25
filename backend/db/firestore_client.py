@@ -18,10 +18,11 @@ metadata server). The identical code, identical database, identical service
 account (tested via impersonation) worked perfectly locally. Raw authenticated
 REST calls (google.auth.transport.requests.AuthorizedSession, no SDK
 involved) work correctly in every case tested, including the exact failing
-Cloud Run environment -- confirmed live before this rewrite. See
-backend/rag/playbook_index.py for the one remaining piece still on the SDK
-(vector search has no REST reimplementation here yet -- a known, scoped-out
-gap, not an oversight).
+Cloud Run environment -- confirmed live before this rewrite. The
+google-cloud-firestore SDK is no longer a dependency of this codebase at
+all -- backend/rag/playbook_index.py, its one remaining user, now indexes
+the (Docker-bundled) playbook file in memory instead of via Firestore's
+native vector search, sidestepping the same broken SDK entirely.
 """
 
 import datetime

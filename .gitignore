@@ -3,11 +3,10 @@
 .env.*
 !.env.example
 
-# Proprietary domain knowledge -- kept local + in the deployed Firestore RAG
-# index (see fixtures/seed_playbook_index.py), never in version control.
-# The RAG pipeline only reads this file at index-build time; every runtime
-# query goes through the already-built Firestore vector index, so excluding
-# it here does not affect the running app.
+# Proprietary domain knowledge -- kept local and baked into the deployed
+# Docker image (see .gcloudignore + Dockerfile), never in version control.
+# backend/rag/playbook_index.py chunks/embeds this file into an in-memory
+# index at runtime, so excluding it from git does not affect the running app.
 GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md
 
 # Python

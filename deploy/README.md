@@ -87,28 +87,14 @@ python -m fixtures.seed_firestore
 The SchemaAuditorAgent and the "Ask FeedOps" support endpoint
 (`POST /api/support/ask`) ground themselves in the real
 [GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md](../GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md)
-via Firestore vector search (`backend/rag/playbook_index.py`, collection
-`playbook_chunks`) instead of a hardcoded prompt summary. Build that index
-once, and again whenever the playbook doc changes:
-
-```bash
-python -m fixtures.seed_playbook_index
-```
-
-**Before that will actually retrieve anything**, create the vector index
-`find_nearest()` needs on the `embedding` field -- without it, retrieval
-fails with `FailedPrecondition` (the error message includes a direct link to
-create it, or run this ahead of time):
-
-```bash
-gcloud firestore indexes composite create \
-  --collection-group=playbook_chunks \
-  --query-scope=COLLECTION \
-  --field-config=vector-config='{"dimension":"768","flat":"{}"}',field-path=embedding
-```
-
-(768 matches `GEMINI_EMBEDDING_DIMENSION`'s default in `playbook_index.py` --
-keep them in sync if you change one.)
+instead of a hardcoded prompt summary, via `backend/rag/playbook_index.py`.
+There's no separate index-build step and no Firestore vector index to
+provision: the Dockerfile already `COPY`s the playbook into the image, and
+the first `retrieve_playbook_context` call in each process chunks and embeds
+it into a plain in-memory list, then ranks by cosine similarity in Python.
+Nothing to run ahead of time -- just make sure the file exists wherever the
+process runs (it does, in the deployed container) and `GEMINI_API_KEY` is
+set.
 
 # Scheduled jobs: Cloud Run Jobs + Cloud Scheduler
 
