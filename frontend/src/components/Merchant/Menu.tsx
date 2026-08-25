@@ -113,9 +113,38 @@ export function Menu() {
         // replacing it -- a menu is commonly split across several photos
         // (appetizers, mains, desserts...), and each upload used to
         // silently overwrite the previous one, both locally and once
-        // auto-saved to Firestore.
-        const combinedItems = [...menuItems, ...parsedItems];
+        // auto-saved to Firestore. Accumulating on its own reopens a
+        // different problem though: accidentally uploading the same page
+        // twice now duplicates instead of overwriting, so dedupe -- against
+        // both what's already in the menu and duplicates within this same
+        // upload (extraction occasionally double-lists an item).
+        //
+        // Keyed on name + category + price together, not name alone: the
+        // same dish name can legitimately appear more than once with a
+        // different category/price (e.g. "Fried Rice" under both Breakfast
+        // and Dinner) -- name-only dedup would wrongly drop the second one.
+        const dedupeKey = (item: MenuItem) => {
+          const priceNum = parseFloat(item.price);
+          const priceKey = isNaN(priceNum) ? item.price.trim().toLowerCase() : priceNum.toFixed(2);
+          return `${item.name.trim().toLowerCase()}|${item.category.trim().toLowerCase()}|${priceKey}`;
+        };
+        const seenKeys = new Set(menuItems.map(dedupeKey));
+        const newItems: MenuItem[] = [];
+        let duplicateCount = 0;
+        for (const item of parsedItems) {
+          const key = dedupeKey(item);
+          if (item.name.trim() && seenKeys.has(key)) {
+            duplicateCount += 1;
+            continue;
+          }
+          if (item.name.trim()) seenKeys.add(key);
+          newItems.push(item);
+        }
+
+        const combinedItems = [...menuItems, ...newItems];
         setMenuItems(combinedItems);
+
+        const dupeNote = duplicateCount > 0 ? ` (${duplicateCount} duplicate${duplicateCount === 1 ? '' : 's'} already in your menu skipped)` : '';
 
         // Auto-save to database
         if (auth.currentUser) {
@@ -127,7 +156,7 @@ export function Menu() {
               updatedAt: new Date().toISOString()
             });
             setMenuStatus('draft');
-            setSuccess(`Added ${parsedItems.length} item(s) from this upload (${combinedItems.length} total) and saved as a draft.`);
+            setSuccess(`Added ${newItems.length} new item(s)${dupeNote} from this upload (${combinedItems.length} total) and saved as a draft.`);
           } catch (saveErr: any) {
             console.error(saveErr);
             setError('Menu extracted, but failed to save to database: ' + saveErr.message);
