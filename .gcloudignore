@@ -1,0 +1,24 @@
+# Cloud Build source uploads (gcloud builds submit / gcloud run deploy --source)
+# default to deriving their ignore rules from .gitignore when this file is
+# absent -- which would silently exclude GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md
+# from the build context too, breaking the Dockerfile's COPY step, since the
+# playbook is intentionally git-ignored but still needs to reach the image.
+# This file exists specifically to keep those two concerns independent: git
+# exclusion stays in .gitignore, deploy-time inclusion is controlled here.
+
+.git/
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+node_modules/
+frontend/dist/
+feeds_output/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
