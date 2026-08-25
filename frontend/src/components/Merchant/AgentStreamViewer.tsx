@@ -6,7 +6,8 @@ export function AgentStreamViewer() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const eventSource = new EventSource('http://localhost:8000/api/agent/stream');
+    const base = import.meta.env.DEV ? 'http://localhost:8000' : '';
+    const eventSource = new EventSource(`${base}/api/agent/stream`);
 
     eventSource.onmessage = (event) => {
       try {

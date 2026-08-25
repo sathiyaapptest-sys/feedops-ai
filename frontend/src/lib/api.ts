@@ -1,6 +1,13 @@
 import { auth } from './firebase';
 
-const API_BASE_URL = 'http://localhost:8000';
+// Local dev: frontend (vite, :5173) and backend (:8000) run as separate
+// servers, so calls need an absolute URL. Production: the Dockerfile builds
+// this frontend and serves it from the SAME Cloud Run service as the API
+// (see app.py's SPAStaticFiles mount), so a relative path is correct and
+// necessary -- a hardcoded localhost URL here silently fails every API call
+// in production (a real bug this app shipped with: "Failed to fetch" on
+// every request, confirmed live before this fix).
+const API_BASE_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
 async function getIdToken(): Promise<string | null> {
   const user = auth.currentUser;
