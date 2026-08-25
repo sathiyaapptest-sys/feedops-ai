@@ -47,15 +47,18 @@ export function Menu() {
     return () => unsubscribe();
   }, []);
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-    
+  // Shared by both the file-picker input and drag-and-drop -- the dropzone's
+  // own text always said "Click or drag file here," but nothing ever wired
+  // up onDrop/onDragOver, so dropping a file silently did nothing (the
+  // browser's default behavior for an unhandled drop, usually just
+  // navigating away). Extracted so both paths run identical logic instead
+  // of duplicating it.
+  const processFile = async (file: File) => {
     setUploading(true);
     setError(null);
     setSuccess(null);
     setValidationError(null);
 
-    const file = e.target.files[0];
     try {
       let data;
       if (file.name.endsWith('.json') || file.name.endsWith('.xlsx')) {
@@ -138,8 +141,34 @@ export function Menu() {
       setError(err.message || 'An error occurred during upload.');
     } finally {
       setUploading(false);
-      e.target.value = '';
     }
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+    e.target.value = ''; // reset now so picking the same file again later still fires onChange
+    await processFile(file);
+  };
+
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDrop = async (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (uploading) return;
+    if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+    await processFile(e.dataTransfer.files[0]);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault(); // required, or the browser refuses the drop entirely
+    if (!isDragging) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
   };
 
   const updateItem = (index: number, field: keyof MenuItem, value: string) => {
@@ -220,15 +249,26 @@ export function Menu() {
           <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
             {menuItems.length > 0 ? `Add More Items (${menuItems.length} in menu so far)` : 'Upload Menu (Image, Excel, JSON)'}
           </label>
-          <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-300 border-dashed rounded-lg cursor-pointer bg-slate-50 dark:hover:bg-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:hover:border-slate-500 transition-colors">
-            <div className="flex flex-col items-center justify-center pt-5 pb-6">
+          <label
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
+              isDragging
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                : 'border-slate-300 bg-slate-50 dark:hover:bg-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:hover:border-slate-500'
+            }`}
+          >
+            <div className="flex flex-col items-center justify-center pt-5 pb-6 pointer-events-none">
               {uploading ? (
                 <Loader2 className="w-8 h-8 text-slate-500 animate-spin mb-2" />
               ) : (
-                <UploadCloud className="w-8 h-8 text-slate-500 mb-2" />
+                <UploadCloud className={`w-8 h-8 mb-2 ${isDragging ? 'text-blue-500' : 'text-slate-500'}`} />
               )}
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                {menuItems.length > 0
+                {isDragging
+                  ? 'Drop it here'
+                  : menuItems.length > 0
                   ? 'Click or drag another page here -- new items are added to your menu below, not replaced'
                   : 'Click or drag file here (JPG, PNG, XLSX, JSON)'}
               </p>
