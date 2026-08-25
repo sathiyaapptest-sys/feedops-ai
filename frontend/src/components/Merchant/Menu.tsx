@@ -211,9 +211,14 @@ export function Menu() {
 
       <div className="p-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 space-y-6">
         
-        {/* Upload Area */}
+        {/* Upload Area -- doubles as "Add More" once a menu already exists:
+            each upload appends to what's below rather than replacing it, so
+            the label and hint say that explicitly instead of relying on the
+            user already knowing. */}
         <div>
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Upload Menu (Image, Excel, JSON)</label>
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+            {menuItems.length > 0 ? `Add More Items (${menuItems.length} in menu so far)` : 'Upload Menu (Image, Excel, JSON)'}
+          </label>
           <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-300 border-dashed rounded-lg cursor-pointer bg-slate-50 dark:hover:bg-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:hover:border-slate-500 transition-colors">
             <div className="flex flex-col items-center justify-center pt-5 pb-6">
               {uploading ? (
@@ -221,7 +226,11 @@ export function Menu() {
               ) : (
                 <UploadCloud className="w-8 h-8 text-slate-500 mb-2" />
               )}
-              <p className="text-sm text-slate-500 dark:text-slate-400">Click or drag file here (JPG, PNG, XLSX, JSON)</p>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                {menuItems.length > 0
+                  ? 'Click or drag another page here -- new items are added to your menu below, not replaced'
+                  : 'Click or drag file here (JPG, PNG, XLSX, JSON)'}
+              </p>
             </div>
             <input type="file" className="hidden" accept="image/*,.xlsx,.json" onChange={handleFileChange} disabled={uploading} />
           </label>
