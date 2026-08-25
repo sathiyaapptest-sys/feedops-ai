@@ -2,27 +2,55 @@
 
 ## Web service (Cloud Run) -- start here
 
-The root `Dockerfile` builds the FastAPI backend (`backend/server/app.py`) as
-a standard Cloud Run service. Built and run-tested locally with real Docker
-before this was written down: the image builds clean, serves `/docs` and
-every API route, degrades gracefully with no credentials mounted (returns a
-clear JSON error instead of crashing), and shuts down cleanly on SIGTERM in
-under a second. Not yet deployed to a real GCP project -- that needs your
-own authenticated `gcloud` session, which nothing in this repo can do for you.
+The root `Dockerfile` is a two-stage build: it compiles the React frontend
+first (`frontend/dist`), then packages it alongside the FastAPI backend
+(`backend/server/app.py`) into one Cloud Run service -- `app.py` mounts
+`frontend/dist` as static files after every `/api/*` route, so one URL
+serves both the UI and the API. Built and run-tested locally with real
+Docker: the image builds clean, serves `/docs`, every API route, and the
+compiled React app (`/`, static assets), degrades gracefully with no
+credentials mounted (returns a clear JSON error instead of crashing), and
+shuts down cleanly on SIGTERM in under a second.
+
+**The frontend stage needs your real Firebase Web SDK config as Docker
+build args** (Vite bakes `VITE_*` vars into the JS at build time, so they
+can't be set as ordinary Cloud Run runtime env vars afterward -- that would
+have no effect on the already-built bundle). Because `gcloud run deploy
+--source` doesn't expose `--build-arg`, this needs the two-step Cloud
+Build path instead of the one-liner:
 
 ```bash
 export PROJECT_ID=your-gcp-project
 export REGION=us-central1
+export IMAGE=gcr.io/$PROJECT_ID/feedops-ai-backend
 
-# One command: builds via Cloud Build, pushes, deploys, and prints a live URL.
+# Step 1: build the image via Cloud Build, passing your Firebase project's
+# real Web SDK config (console.firebase.google.com -> Project settings ->
+# General -> Your apps -> Web app -> SDK setup and configuration).
+gcloud builds submit --config=deploy/cloudbuild.web.yaml \
+  --substitutions=_IMAGE=$IMAGE,\
+_VITE_FIREBASE_API_KEY=your-value,\
+_VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com,\
+_VITE_FIREBASE_PROJECT_ID=your-project,\
+_VITE_FIREBASE_STORAGE_BUCKET=your-project.appspot.com,\
+_VITE_FIREBASE_MESSAGING_SENDER_ID=your-value,\
+_VITE_FIREBASE_APP_ID=your-value
+
+# Step 2: deploy that image.
 gcloud run deploy feedops-ai-backend \
-  --source . \
+  --image=$IMAGE \
   --region=$REGION \
   --allow-unauthenticated \
   --service-account=feedops-run@$PROJECT_ID.iam.gserviceaccount.com \
   --set-secrets="GEMINI_API_KEY=gemini-api-key:latest" \
   --set-env-vars="ENVIRONMENT=sandbox"
 ```
+
+These are Firebase's own client-side Web SDK values, not secrets -- they
+identify the project rather than authorize access (real security is
+Firebase Security Rules + API key restrictions in the GCP console), so
+they're fine to pass as plain build substitutions rather than Secret
+Manager entries.
 
 The service account needs `roles/datastore.user` (Firestore reads/writes via
 Application Default Credentials -- no key file needed, same pattern as
