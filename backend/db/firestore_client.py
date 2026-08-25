@@ -12,7 +12,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 import firebase_admin
-from firebase_admin import firestore
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 logger = logging.getLogger("feedops.db")
@@ -55,10 +55,18 @@ def get_client() -> "firestore.Client":
     Returns a Firestore client using Application Default Credentials (a service
     account on Cloud Run, or `gcloud auth application-default login` locally).
     Set FIRESTORE_EMULATOR_HOST to point this at a local emulator instead.
+
+    Uses google.cloud.firestore directly rather than firebase_admin.firestore's
+    wrapper -- the wrapper hit a real "Invalid database id (default)" error in
+    production (Cloud Run), a known incompatibility between firebase-admin's
+    bundled client construction and the current google-cloud-firestore
+    library's handling of the (default) database identifier. The direct
+    library doesn't have this issue. firebase_admin is still initialized here
+    since backend/server/auth.py's token verification depends on it.
     """
     if not firebase_admin._apps:
         firebase_admin.initialize_app()
-    return firestore.client()
+    return firestore.Client()
 
 
 class MerchantRepository:
