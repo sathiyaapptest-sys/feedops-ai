@@ -11,7 +11,6 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-import firebase_admin
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -56,20 +55,20 @@ def get_client() -> "firestore.Client":
     account on Cloud Run, or `gcloud auth application-default login` locally).
     Set FIRESTORE_EMULATOR_HOST to point this at a local emulator instead.
 
-    Explicitly passes database="(default)" -- omitting it (letting the client
-    library compute its own default) produced a real "400 Invalid database id
-    (default)" error in production (Cloud Run) even though
-    `gcloud firestore databases list` confirms that's the correct, healthy
-    database name. Switching from firebase_admin.firestore's wrapper to
-    google.cloud.firestore directly did NOT fix it either -- both hit the
-    identical error, so this isn't a wrapper-vs-direct-library issue. Passing
-    the ID explicitly is the next targeted attempt at whatever's misfiring in
-    the default-resolution path specifically. firebase_admin is still
-    initialized here since backend/server/auth.py's token verification
-    depends on it.
+    Deliberately does NOT call firebase_admin.initialize_app() here. This
+    module only ever needs google.cloud.firestore -- firebase_admin is a
+    separate SDK, initialized independently by backend/server/auth.py for
+    token verification, so this module has no real dependency on it.
+    Removed after a real production bug: "400 Invalid database id (default)"
+    on every Firestore call from Cloud Run, despite `gcloud firestore
+    databases list` confirming the database is healthy and correctly named,
+    AND the exact same client construction (including explicit
+    database="(default)") succeeding both with real user ADC and with
+    impersonated feedops-run credentials when tested locally. The one
+    remaining difference was this redundant firebase_admin.initialize_app()
+    call running first inside Cloud Run's own metadata-server credential
+    path -- removed as the next targeted fix.
     """
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app()
     return firestore.Client(database="(default)")
 
 
