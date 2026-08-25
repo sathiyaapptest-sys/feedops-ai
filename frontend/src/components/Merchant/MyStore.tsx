@@ -305,17 +305,22 @@ export function MyStore() {
                 Find Profile
               </button>
             </div>
-            <div className="mt-4 flex-1 bg-slate-100 dark:bg-slate-700 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-600 min-h-[200px] relative">
-               <iframe
-                width="100%"
-                height="100%"
-                style={{ border: 0 }}
-                loading="lazy"
-                allowFullScreen
-                src={`https://www.google.com/maps/embed/v1/place?key=AIzaSyMockKeyForDemoOnly&q=${mapQuery}`}
-              ></iframe>
-              <div className="absolute inset-0 bg-slate-200 dark:bg-slate-800/20 flex items-center justify-center backdrop-blur-[1px] pointer-events-none">
-              </div>
+            <div className="mt-4 flex-1 bg-slate-100 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600 min-h-[200px] flex flex-col items-center justify-center gap-3 p-6 text-center">
+              <MapPin className="w-8 h-8 text-slate-400" />
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                {address ? 'Confirm this address looks right on the map:' : 'Enter an address above to preview it on the map.'}
+              </p>
+              {address && (
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${mapQuery}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
+                >
+                  <MapPin className="w-4 h-4" />
+                  View on Google Maps
+                </a>
+              )}
             </div>
           </div>
 

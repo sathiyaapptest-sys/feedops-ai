@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import asyncio
 import logging
 import os
@@ -454,6 +455,26 @@ async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str]
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles(html=True) only auto-serves index.html for the root path,
+    not for arbitrary react-router-dom client-side routes (e.g. /login,
+    /merchant/store) -- those 404 as raw JSON instead of loading the app,
+    since no real file exists at that path. Falls back to index.html for any
+    unmatched path so React Router can take over client-side. Mounted last,
+    after every /api/* route, so those still take priority.
+
+    StaticFiles.get_response() *raises* HTTPException(404) on a miss rather
+    than returning a 404 response object, so the fallback has to be a
+    try/except around the call, not an if-check on the return value."""
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
 # Mount static files for /dist if running in production mode
 if os.path.isdir("frontend/dist"):
-    app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="static")
+    app.mount("/", SPAStaticFiles(directory="frontend/dist", html=True), name="static")

@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, MapPin, AlertCircle, CheckCircle2, Loader2, Terminal } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { UploadCloud, AlertCircle, CheckCircle2, Loader2, Terminal } from 'lucide-react';
 
 import { api } from '@/lib/api';
 
@@ -28,7 +27,6 @@ export const MerchantOnboardingCard: React.FC = () => {
   const [storeName, setStoreName] = useState('');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
-  const [pin, setPin] = useState({ lat: 37.7749, lng: -122.4194 });
 
   const [running, setRunning] = useState(false);
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -58,8 +56,6 @@ export const MerchantOnboardingCard: React.FC = () => {
           name: storeName,
           address,
           telephone: phone || undefined,
-          latitude: pin.lat,
-          longitude: pin.lng,
         },
         (event) => setEvents((prev) => [...prev, event])
       );
@@ -145,28 +141,6 @@ export const MerchantOnboardingCard: React.FC = () => {
               className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
               placeholder="+15551234567"
             />
-          </div>
-        </div>
-
-        {/* Map Adjuster */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-medium">Location Pin Adjuster</label>
-            <span className="text-xs text-muted-foreground font-mono">{pin.lat.toFixed(4)}, {pin.lng.toFixed(4)}</span>
-          </div>
-          <div className="h-48 w-full bg-accent/30 rounded-lg border border-border relative overflow-hidden flex items-center justify-center">
-            <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, currentColor 1px, transparent 0)', backgroundSize: '24px 24px' }}></div>
-            <motion.div
-              drag
-              dragConstraints={{ top: -80, left: -250, right: 250, bottom: 80 }}
-              onDrag={(_, info) => {
-                setPin((p) => ({ lat: p.lat - info.delta.y * 0.0001, lng: p.lng + info.delta.x * 0.0001 }));
-              }}
-              className="cursor-grab active:cursor-grabbing z-10 text-primary flex flex-col items-center"
-            >
-              <div className="bg-primary text-primary-foreground text-[10px] font-bold px-2 py-0.5 rounded shadow-sm mb-1 pointer-events-none">Drag to adjust</div>
-              <MapPin className="w-8 h-8 fill-primary text-background drop-shadow-md" />
-            </motion.div>
           </div>
         </div>
 
