@@ -102,6 +102,12 @@ def _load_from_json_snapshot(path: str = DEFAULT_SNAPSHOT_PATH) -> List[Dict[str
             "address": address_str,
             "telephone": m.get("telephone"),
             "action_link": m.get("action_link"),
+            # This id is from the static fixture, not a real Firestore document --
+            # _persist_guard_results must not write status updates back under it,
+            # or it creates an orphaned ghost merchant doc with no name/address,
+            # just a status and a place_id (a real bug this flag fixes: it happened
+            # every time the daily push fell back to this snapshot).
+            "_synthetic": True,
         })
     return merchants
 
@@ -137,12 +143,21 @@ def _apply_closed_merchant_guard(
 
 def _persist_guard_results(kept: List[Dict[str, Any]], excluded: List[Dict[str, Any]]) -> None:
     """Best-effort: reflects the guard's decisions back to Firestore for the ops UI.
-    Never lets a Firestore write failure block the actual feed push."""
+    Never lets a Firestore write failure block the actual feed push.
+
+    Skips merchants tagged _synthetic (sourced from the JSON snapshot fallback,
+    not a real Firestore document) -- writing a status update under their
+    fixture id would create a brand-new orphaned document with no name or
+    address, not update anything real."""
     try:
         repo = MerchantRepository()
         for m in excluded:
+            if m.get("_synthetic"):
+                continue
             repo.update_status(m["store_id"], STATUS_EXCLUDED_CLOSED, extra={"exclude_reason": m["exclude_reason"]})
         for m in kept:
+            if m.get("_synthetic"):
+                continue
             match = m.get("match_result") or {}
             if match.get("place_id"):
                 repo.update_status(m["store_id"], STATUS_MATCHED, extra={"place_id": match["place_id"]})
