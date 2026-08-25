@@ -6,7 +6,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import asyncio
 import logging
 import os
-import re
 import uuid
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
@@ -18,6 +17,7 @@ from pydantic import BaseModel
 logger = logging.getLogger("feedops.server")
 from backend.tools.menu_extractor import ImageMenuExtractor
 from backend.tools.excel_parser import SpreadsheetFeedParser
+from backend.tools.data_adapter import slugify_store_id
 from backend.tools.places_matcher import GooglePlacesClient, resolve_entity_match
 from backend.server.auth import get_current_user
 from backend.agent.orchestrator import FeedOpsOrchestrator
@@ -26,6 +26,7 @@ from backend.db.firestore_client import (
     STATUS_NO_LISTING, STATUS_APPROVED, STATUS_REJECTED,
     OrganizationRepository, ORG_TYPE_MERCHANT, ORG_TYPE_AGGREGATOR, PORTAL_STATUS_NOT_STARTED,
     UploadBatchRepository, VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS,
+    MenuRepository,
 )
 from backend.jobs.scheduled_tasks import run_daily_feed_push
 
@@ -100,11 +101,6 @@ def _service_types_from_options(options: Dict[str, Any]) -> List[str]:
     if options.get("takeaway"):
         types.append("TAKEOUT")
     return types
-
-
-def _slugify(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug or "merchant"
 
 
 @app.post("/api/organizations")
@@ -423,7 +419,7 @@ async def _persist_bulk_merchant(merchant: Dict[str, Any], org_id: str) -> Dict[
     upload only validated rows and handed them back to the browser -- they
     never reached the triage queue, readiness scorecard, or daily feed push.
     """
-    store_id = f"{org_id}_{_slugify(merchant['name'])}"
+    store_id = slugify_store_id(org_id, merchant["name"])
     try:
         match = await resolve_entity_match(merchant["name"], merchant["address"])
     except Exception as e:
@@ -456,11 +452,18 @@ async def _persist_bulk_merchant(merchant: Dict[str, Any], org_id: str) -> Dict[
 @app.post("/api/upload/spreadsheet")
 async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str] = Form(None)):
     """
-    Accepts multipart/form-data Excel/CSV, validates it, and persists every
-    valid row the same way single-merchant onboarding does -- a deterministic
-    Places match plus a real `merchants` collection write -- so bulk-uploaded
-    merchants actually reach the triage queue, readiness scorecard, and daily
-    feed push, not just a parsed preview shown once in the browser.
+    Accepts multipart/form-data Excel/CSV of restaurant/merchant rows, validates
+    it, and persists every valid row the same way single-merchant onboarding
+    does -- a deterministic Places match plus a real `merchants` collection
+    write -- so bulk-uploaded merchants actually reach the triage queue,
+    readiness scorecard, and daily feed push, not just a parsed preview shown
+    once in the browser.
+
+    Menu items are a separate upload now (POST /api/upload/menu-spreadsheet) --
+    they used to ride along as a second sheet of the same workbook, which forced
+    every aggregator into one specific file shape and meant a menu-only
+    re-upload had to carry merchant rows too, even though the two data sources
+    are frequently entirely different exports in practice.
 
     With org_id: loads that organization's saved column-mapping adapter (remembered
     from a previous upload) or infers and saves one, and rows that fail required-field
@@ -473,12 +476,10 @@ async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str]
             shutil.copyfileobj(file.file, buffer)
 
         parser = SpreadsheetFeedParser()
-        data = parser.parse(temp_path, org_id=org_id)
+        data = parser.parse_merchants(temp_path, org_id=org_id)
         os.remove(temp_path)
 
-        # Serialize objects to dicts for JSON response
         merchants = [m.model_dump() for m in data["merchants"]]
-        menus = [m.model_dump() for m in data["menus"]]
 
         persisted: List[Dict[str, Any]] = []
         if merchants:
@@ -496,15 +497,62 @@ async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str]
         return {
             "status": "success",
             "merchants_count": len(merchants),
-            "menus_count": len(menus),
             "persisted_count": len(persisted),
             "persisted": persisted,
             "errors": data["errors"],
             "adapter": data["adapter"],
-            "data": {
-                "merchants": merchants,
-                "menus": menus
-            }
+            "data": {"merchants": merchants},
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/upload/menu-spreadsheet")
+async def upload_menu_spreadsheet(file: UploadFile = File(...), org_id: Optional[str] = Form(None)):
+    """
+    Accepts multipart/form-data Excel/CSV of menu item rows -- one row per dish,
+    identified by a merchant-name column -- and persists them into the same
+    `menus/{store_id}` documents Menu.tsx's own self-service editor reads and
+    writes. Each row's store_id is computed the identical way the restaurant
+    upload's does (slugify_store_id(org_id, merchant_name)), so items land on
+    the same merchant a restaurant upload for that name already created, or
+    will if uploaded afterward -- order between the two uploads doesn't matter.
+
+    Previously, a spreadsheet's menu sheet was parsed and counted in the
+    response but never written anywhere -- this endpoint is what that data
+    was missing.
+    """
+    try:
+        fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
+        with os.fdopen(fd, 'wb') as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        parser = SpreadsheetFeedParser()
+        effective_org_id = org_id or "unknown"
+        data = parser.parse_menu(temp_path, org_id=effective_org_id)
+        os.remove(temp_path)
+
+        items = [m.model_dump() for m in data["items"]]
+
+        by_store: Dict[str, List[Dict[str, Any]]] = {}
+        for item in items:
+            by_store.setdefault(item["store_id"], []).append(
+                {k: v for k, v in item.items() if k not in ("store_id", "merchant_name")}
+            )
+
+        merchants_updated = []
+        for store_id, store_items in by_store.items():
+            try:
+                result = await asyncio.to_thread(MenuRepository().add_items, store_id, store_items)
+                merchant_name = next((it["merchant_name"] for it in items if it["store_id"] == store_id), store_id)
+                merchants_updated.append({"store_id": store_id, "name": merchant_name, **result})
+            except Exception as e:
+                logger.warning(f"Could not persist bulk menu items for '{store_id}': {e}")
+
+        return {
+            "status": "success",
+            "items_count": len(items),
+            "merchants_updated": merchants_updated,
+            "errors": data["errors"],
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}

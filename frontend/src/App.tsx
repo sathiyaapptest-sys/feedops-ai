@@ -5,6 +5,7 @@ import MerchantLayout from './components/Layout/MerchantLayout';
 import { ReadinessScorecard } from './components/Aggregator/ReadinessScorecard';
 import { TriageQueue } from './components/Aggregator/TriageQueue';
 import { BulkUpload } from './components/Aggregator/BulkUpload';
+import { BulkMenuUpload } from './components/Aggregator/BulkMenuUpload';
 import { FeedHealth } from './components/Aggregator/FeedHealth';
 import { MyStore } from './components/Merchant/MyStore';
 import { Menu } from './components/Merchant/Menu';
@@ -31,6 +32,7 @@ function App() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <TriageQueue />
                 <BulkUpload />
+                <BulkMenuUpload />
                 <FeedHealth />
               </div>
             </div>

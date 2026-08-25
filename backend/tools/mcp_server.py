@@ -67,11 +67,22 @@ def extract_menu_from_image(file_path: str) -> str:
 
 @mcp.tool()
 def parse_spreadsheet_to_feed(file_path: str) -> str:
-    """Parse merchants and menus from an Excel/CSV spreadsheet."""
+    """Parse restaurant/merchant rows from an Excel/CSV spreadsheet."""
     parser = SpreadsheetFeedParser()
     try:
-        data = parser.parse(file_path)
-        return f"Parsed {len(data['merchants'])} merchants and {len(data['menus'])} menu items."
+        data = parser.parse_merchants(file_path)
+        return f"Parsed {len(data['merchants'])} merchant(s), {len(data['errors'])} row error(s)."
+    except Exception as e:
+        return str(e)
+
+@mcp.tool()
+def parse_menu_spreadsheet(file_path: str, org_id: str) -> str:
+    """Parse menu item rows from a standalone Excel/CSV spreadsheet, one row per
+    dish identified by a merchant-name column."""
+    parser = SpreadsheetFeedParser()
+    try:
+        data = parser.parse_menu(file_path, org_id=org_id)
+        return f"Parsed {len(data['items'])} menu item(s), {len(data['errors'])} row error(s)."
     except Exception as e:
         return str(e)
 

@@ -112,6 +112,20 @@ export const api = {
     });
     return res.json();
   },
+  /** Bulk menu upload -- a standalone spreadsheet of dish rows identified by a
+   * merchant-name column, separate from the restaurant/merchant upload above.
+   * Items are matched to the merchant record that upload creates/updates by
+   * computing the identical store_id server-side, so the two files can be
+   * uploaded in either order. */
+  uploadMenuSpreadsheet: async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(`${API_BASE_URL}/api/upload/menu-spreadsheet`, {
+      method: 'POST',
+      body: formData,
+    });
+    return res.json();
+  },
   searchPlaces: async (query: string) => {
     const res = await fetch(`${API_BASE_URL}/api/places/search?query=${encodeURIComponent(query)}`);
     return res.json();

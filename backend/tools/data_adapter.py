@@ -17,6 +17,18 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 from pydantic import BaseModel
 
+def slugify_store_id(org_id: str, name: str) -> str:
+    """
+    Deterministic store_id for a bulk-uploaded merchant. Shared by every bulk
+    ingestion path (restaurant rows, menu rows) so a menu spreadsheet -- a
+    separate upload, possibly from a separate source system -- lands on the
+    exact same merchant document a restaurant spreadsheet created, without
+    needing the aggregator to invent and pass around an id column by hand.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "merchant"
+    return f"{org_id}_{slug}"
+
+
 REQUIRED_CANONICAL_FIELDS = {"name", "address"}
 OPTIONAL_CANONICAL_FIELDS = {"telephone", "action_link"}
 

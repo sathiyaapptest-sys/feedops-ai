@@ -38,6 +38,7 @@ logger = logging.getLogger("feedops.db")
 MERCHANTS_COLLECTION = os.getenv("FIRESTORE_MERCHANTS_COLLECTION", "merchants")
 ORGANIZATIONS_COLLECTION = os.getenv("FIRESTORE_ORGANIZATIONS_COLLECTION", "organizations")
 UPLOAD_BATCHES_COLLECTION = os.getenv("FIRESTORE_UPLOAD_BATCHES_COLLECTION", "upload_batches")
+MENUS_COLLECTION = os.getenv("FIRESTORE_MENUS_COLLECTION", "menus")
 
 # Lifecycle statuses a merchant document can hold.
 STATUS_NEW = "new"
@@ -307,6 +308,67 @@ class OrganizationRepository:
     def get_adapter(self, org_id: str) -> Optional[Dict[str, Any]]:
         org = self.get(org_id)
         return org.get("adapter") if org else None
+
+
+class MenuRepository:
+    """
+    Firestore-backed CRUD over the `menus` collection -- the exact same
+    `menus/{store_id}` documents Menu.tsx's client-side Firebase SDK reads and
+    writes for a self-service merchant's own menu editor (`{items: [...],
+    status, updated_at}`). Written here via the service account's own IAM
+    access rather than the client SDK, since a bulk menu upload acts on
+    behalf of many merchants at once -- Firestore Security Rules restrict the
+    client SDK to a single authenticated user's own document, which an
+    aggregator's bulk upload is not.
+    """
+
+    def __init__(self, client: Optional[_FirestoreRest] = None):
+        self.client = client or get_client()
+
+    def get(self, store_id: str) -> Optional[Dict[str, Any]]:
+        return self.client.get(MENUS_COLLECTION, store_id)
+
+    @staticmethod
+    def _dedupe_key(item: Dict[str, Any]) -> str:
+        """Same composite key Menu.tsx's own accumulate/dedupe logic uses
+        (name+category+price, not name alone) -- a dish can legitimately
+        appear in two categories (e.g. breakfast and dinner) at different
+        prices, so name alone would wrongly treat those as duplicates."""
+        name = str(item.get("name", "")).strip().lower()
+        category = str(item.get("category") or "").strip().lower()
+        price = item.get("price")
+        try:
+            price_key = f"{float(price):.2f}"
+        except (TypeError, ValueError):
+            price_key = str(price).strip().lower()
+        return f"{name}|{category}|{price_key}"
+
+    def add_items(self, store_id: str, new_items: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Merges new_items into the merchant's existing menu, skipping any that
+        already exist by the composite dedupe key -- the same accumulate-not-
+        overwrite behavior Menu.tsx's own uploads use, so a bulk upload can't
+        silently wipe out items a merchant already added themselves."""
+        existing = self.get(store_id) or {}
+        current_items: List[Dict[str, Any]] = existing.get("items") or []
+        seen = {self._dedupe_key(item) for item in current_items}
+
+        added = []
+        skipped = 0
+        for item in new_items:
+            key = self._dedupe_key(item)
+            if key in seen:
+                skipped += 1
+                continue
+            seen.add(key)
+            added.append(item)
+
+        payload = {
+            "items": current_items + added,
+            "status": existing.get("status", "draft"),
+            "updated_at": SERVER_TIMESTAMP,
+        }
+        self.client.set(MENUS_COLLECTION, store_id, payload, merge=True)
+        return {"added": len(added), "skipped_duplicates": skipped, "total": len(current_items) + len(added)}
 
 
 class UploadBatchRepository:
