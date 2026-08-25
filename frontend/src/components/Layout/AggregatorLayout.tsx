@@ -1,11 +1,12 @@
 import { Outlet, useNavigate, NavLink } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth } from '../../lib/firebase';
-import { LogOut, LayoutDashboard, Settings, Layers } from 'lucide-react';
+import { LogOut, LayoutDashboard, Settings, Layers, UploadCloud } from 'lucide-react';
 
 const NAV_ITEMS = [
   { to: '/aggregator/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/aggregator/merchants', label: 'Merchants', icon: Layers },
+  { to: '/aggregator/services', label: 'Services', icon: UploadCloud },
   { to: '/aggregator/webhooks', label: 'API & Webhooks', icon: Settings },
 ];
 

@@ -4,9 +4,7 @@ import AggregatorLayout from './components/Layout/AggregatorLayout';
 import MerchantLayout from './components/Layout/MerchantLayout';
 import { ReadinessScorecard } from './components/Aggregator/ReadinessScorecard';
 import { TriageQueue } from './components/Aggregator/TriageQueue';
-import { BulkUpload } from './components/Aggregator/BulkUpload';
-import { BulkMenuUpload } from './components/Aggregator/BulkMenuUpload';
-import { FeedHealth } from './components/Aggregator/FeedHealth';
+import { AggregatorServices } from './components/Aggregator/AggregatorServices';
 import { Merchants } from './components/Aggregator/Merchants';
 import { ApiWebhooks } from './components/Aggregator/ApiWebhooks';
 import { MyStore } from './components/Merchant/MyStore';
@@ -32,15 +30,11 @@ function App() {
           <Route path="dashboard" element={
             <div className="space-y-6">
               <ReadinessScorecard />
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <TriageQueue />
-                <BulkUpload />
-                <BulkMenuUpload />
-                <FeedHealth />
-              </div>
+              <TriageQueue />
             </div>
           } />
           <Route path="merchants" element={<Merchants />} />
+          <Route path="services" element={<AggregatorServices />} />
           <Route path="webhooks" element={<ApiWebhooks />} />
         </Route>
 
