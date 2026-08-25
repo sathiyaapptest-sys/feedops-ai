@@ -105,19 +105,25 @@ export function Menu() {
       if (parsedItems.length === 0) {
         setError('No items extracted from the file.');
       } else {
-        setMenuItems(parsedItems);
-        
+        // Append to whatever's already loaded/uploaded, rather than
+        // replacing it -- a menu is commonly split across several photos
+        // (appetizers, mains, desserts...), and each upload used to
+        // silently overwrite the previous one, both locally and once
+        // auto-saved to Firestore.
+        const combinedItems = [...menuItems, ...parsedItems];
+        setMenuItems(combinedItems);
+
         // Auto-save to database
         if (auth.currentUser) {
           try {
             const menuRef = doc(db, 'menus', auth.currentUser.email || auth.currentUser.uid);
             await setDoc(menuRef, {
-              items: parsedItems,
+              items: combinedItems,
               status: 'draft',
               updatedAt: new Date().toISOString()
             });
             setMenuStatus('draft');
-            setSuccess('Menu extracted and automatically saved as a draft!');
+            setSuccess(`Added ${parsedItems.length} item(s) from this upload (${combinedItems.length} total) and saved as a draft.`);
           } catch (saveErr: any) {
             console.error(saveErr);
             setError('Menu extracted, but failed to save to database: ' + saveErr.message);
@@ -140,6 +146,18 @@ export function Menu() {
     updated[index] = { ...updated[index], [field]: value };
     setMenuItems(updated);
     setValidationError(null); // Clear validation error on edit
+  };
+
+  const removeItem = (index: number) => {
+    setMenuItems(menuItems.filter((_, i) => i !== index));
+    setValidationError(null);
+  };
+
+  const clearMenu = () => {
+    setMenuItems([]);
+    setMenuStatus(null);
+    setSuccess(null);
+    setValidationError(null);
   };
 
   const handleValidate = () => {
@@ -250,6 +268,7 @@ export function Menu() {
                     <th className="px-4 py-3">Price</th>
                     <th className="px-4 py-3">Category</th>
                     <th className="px-4 py-3">Description</th>
+                    <th className="px-4 py-3 w-10"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
@@ -281,12 +300,22 @@ export function Menu() {
                         />
                       </td>
                       <td className="px-4 py-2">
-                        <input 
-                          type="text" 
-                          value={item.description} 
+                        <input
+                          type="text"
+                          value={item.description}
                           onChange={(e) => updateItem(idx, 'description', e.target.value)}
                           className="w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-blue-500 outline-none px-1 py-1"
                         />
+                      </td>
+                      <td className="px-2 py-2">
+                        <button
+                          type="button"
+                          onClick={() => removeItem(idx)}
+                          title="Remove this item"
+                          className="text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors px-1"
+                        >
+                          &times;
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -295,7 +324,15 @@ export function Menu() {
             </div>
 
             <div className="flex justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-700">
-              <button 
+              <button
+                onClick={clearMenu}
+                type="button"
+                className="px-4 py-2 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-700 dark:text-red-300 font-medium rounded-lg transition-colors mr-auto"
+                title="Clear the current list -- doesn't affect what's already saved until you Save again"
+              >
+                Clear Menu
+              </button>
+              <button
                 onClick={handleValidate}
                 className="px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-medium rounded-lg transition-colors"
               >
