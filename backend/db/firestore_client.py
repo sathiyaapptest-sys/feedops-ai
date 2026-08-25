@@ -56,17 +56,21 @@ def get_client() -> "firestore.Client":
     account on Cloud Run, or `gcloud auth application-default login` locally).
     Set FIRESTORE_EMULATOR_HOST to point this at a local emulator instead.
 
-    Uses google.cloud.firestore directly rather than firebase_admin.firestore's
-    wrapper -- the wrapper hit a real "Invalid database id (default)" error in
-    production (Cloud Run), a known incompatibility between firebase-admin's
-    bundled client construction and the current google-cloud-firestore
-    library's handling of the (default) database identifier. The direct
-    library doesn't have this issue. firebase_admin is still initialized here
-    since backend/server/auth.py's token verification depends on it.
+    Explicitly passes database="(default)" -- omitting it (letting the client
+    library compute its own default) produced a real "400 Invalid database id
+    (default)" error in production (Cloud Run) even though
+    `gcloud firestore databases list` confirms that's the correct, healthy
+    database name. Switching from firebase_admin.firestore's wrapper to
+    google.cloud.firestore directly did NOT fix it either -- both hit the
+    identical error, so this isn't a wrapper-vs-direct-library issue. Passing
+    the ID explicitly is the next targeted attempt at whatever's misfiring in
+    the default-resolution path specifically. firebase_admin is still
+    initialized here since backend/server/auth.py's token verification
+    depends on it.
     """
     if not firebase_admin._apps:
         firebase_admin.initialize_app()
-    return firestore.Client()
+    return firestore.Client(database="(default)")
 
 
 class MerchantRepository:
