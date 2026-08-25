@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { UploadCloud, AlertCircle, CheckCircle2, Loader2, Terminal } from 'lucide-react';
 
 import { api } from '@/lib/api';
@@ -103,14 +104,23 @@ export const MerchantOnboardingCard: React.FC = () => {
       )}
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-6">
-        {/* Dropzone -- menu/CSV upload lives on the Menu page; this is visual context only */}
-        <div className="border-2 border-dashed border-border rounded-lg p-8 flex flex-col items-center justify-center text-center hover:bg-accent/50 transition-colors">
-          <div className="w-12 h-12 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-4">
-            <UploadCloud className="w-6 h-6" />
+        {/* This used to be styled as a dropzone (dashed border, "Drag & drop
+            here" text) but had no onDrop/file input behind it at all -- a
+            drag onto it silently did nothing. It was only ever meant to
+            point at the real Menu page, so it's a real link now instead of
+            an affordance that looked functional but wasn't. */}
+        <Link
+          to="/merchant/menu"
+          className="flex items-center gap-3 p-4 rounded-lg border border-border bg-accent/30 hover:bg-accent/50 transition-colors"
+        >
+          <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
+            <UploadCloud className="w-5 h-5" />
           </div>
-          <p className="text-sm font-medium">Drag & drop printed menu photos or CSV</p>
-          <p className="text-xs text-muted-foreground mt-1">Use the Menu page to upload -- this onboards the store itself</p>
-        </div>
+          <div className="text-left">
+            <p className="text-sm font-medium">Have a printed menu to upload?</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Go to the Menu page &rarr; that's where photo/CSV uploads actually happen.</p>
+          </div>
+        </Link>
 
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5 col-span-2">
