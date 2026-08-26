@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Settings, Terminal, CheckCircle2, AlertCircle, Loader2, FileJson } from 'lucide-react';
+import { Settings, Terminal, CheckCircle2, AlertCircle, Loader2, FileJson, Image, Info } from 'lucide-react';
 import { api } from '@/lib/api';
 
 interface AgentEvent {
@@ -23,6 +23,21 @@ const FEED_LABELS: Record<string, string> = {
   service: 'Service Feed',
 };
 
+interface FeedSuggestion {
+  feed_type: string;
+  suggested_status: 'confirmed_clean' | 'flagged_errors';
+  confidence: number;
+  evidence_quote: string;
+  observed_at?: string | null;
+}
+
+interface ScreenshotAnalysis {
+  screen_type: 'ingestion_history' | 'task_rollup' | 'onboarding_plan' | 'other';
+  summary: string;
+  next_steps: string[];
+  feed_suggestions: FeedSuggestion[];
+}
+
 export function Services() {
   const [running, setRunning] = useState(false);
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -31,6 +46,9 @@ export function Services() {
   const [conversionHealth, setConversionHealth] = useState<Record<string, any> | null>(null);
   const [compiledAt, setCompiledAt] = useState<string | null>(null);
   const [activeFeed, setActiveFeed] = useState<string>('entity');
+  const [screenshotAnalyzing, setScreenshotAnalyzing] = useState(false);
+  const [screenshotAnalysis, setScreenshotAnalysis] = useState<ScreenshotAnalysis | null>(null);
+  const [screenshotError, setScreenshotError] = useState<string | null>(null);
 
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -74,6 +92,26 @@ export function Services() {
       setRunError(err.message || 'Audit failed.');
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleScreenshotChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    setScreenshotAnalyzing(true);
+    setScreenshotError(null);
+    setScreenshotAnalysis(null);
+    try {
+      const res = await api.analyzeFeedScreenshot(e.target.files[0]);
+      if (res.status === 'error') {
+        setScreenshotError(res.message || 'Could not read that screenshot.');
+      } else {
+        setScreenshotAnalysis(res.data);
+      }
+    } catch (err: any) {
+      setScreenshotError(err.message || 'Could not read that screenshot.');
+    } finally {
+      setScreenshotAnalyzing(false);
+      e.target.value = '';
     }
   };
 
@@ -134,6 +172,58 @@ export function Services() {
               {running ? 'Running schema & conversion checks...' : 'Run Schema Audit & Conversion Check'}
             </button>
           </div>
+        </div>
+
+        <div className="p-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-white mb-1">
+            Not sure what Google's Partner Portal is telling you?
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+            Upload a screenshot of the Partner Portal for a plain-language explanation. This never changes
+            anything here -- it's just a translator.
+          </p>
+          <label className="flex items-center justify-center gap-2 w-full h-11 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg cursor-pointer bg-slate-50 dark:bg-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs text-slate-500 dark:text-slate-400">
+            {screenshotAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Image className="w-4 h-4" />}
+            <span>
+              <span className="font-semibold">Upload a Partner Portal screenshot</span>
+              {screenshotAnalyzing ? ' -- reading...' : ''}
+            </span>
+            <input type="file" className="hidden" accept="image/*" onChange={handleScreenshotChange} disabled={screenshotAnalyzing} />
+          </label>
+
+          {screenshotError && (
+            <div className="mt-2 p-3 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 rounded-lg text-xs">
+              {screenshotError}
+            </div>
+          )}
+
+          {screenshotAnalysis && (
+            <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-300 rounded-lg text-xs space-y-2">
+              <p>{screenshotAnalysis.summary}</p>
+              {screenshotAnalysis.next_steps.length > 0 && (
+                <ul className="list-disc list-inside space-y-0.5">
+                  {screenshotAnalysis.next_steps.map((step, i) => (
+                    <li key={i}>{step}</li>
+                  ))}
+                </ul>
+              )}
+              {screenshotAnalysis.feed_suggestions.length > 0 && (
+                <div className="pt-1 space-y-1 border-t border-blue-200 dark:border-blue-800">
+                  {screenshotAnalysis.feed_suggestions.map((s, i) => (
+                    <p key={i} className="flex items-start gap-1">
+                      <Info className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                      <span>
+                        Portal shows <strong>{FEED_LABELS[s.feed_type] || s.feed_type}</strong>:{' '}
+                        <strong>{s.suggested_status === 'confirmed_clean' ? 'Accepted' : 'Rejected'}</strong>
+                        {' '}({Math.round(s.confidence * 100)}% confidence) -- informational only, this page doesn't
+                        record acceptance status.
+                      </span>
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {fileKeys.length > 0 && (

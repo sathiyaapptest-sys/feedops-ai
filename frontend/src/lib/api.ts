@@ -99,6 +99,8 @@ export const api = {
       conversion_partner_id?: string;
       portal_status_sandbox?: string;
       portal_status_production?: string;
+      sandbox_to_prod_review_status?: string;
+      launch_review_status?: string;
     }
   ): Promise<{ status: string; config?: any; message?: string }> => {
     const token = await getIdToken();
@@ -112,6 +114,30 @@ export const api = {
     });
     return res.json();
   },
+  getBatchFeedContent: async (
+    batchId: string
+  ): Promise<{ status: string; feeds?: Record<string, any>; missing?: string[]; message?: string }> => {
+    const res = await fetch(`${API_BASE_URL}/api/batches/${encodeURIComponent(batchId)}/feed-content`);
+    return res.json();
+  },
+  getOnboardingJourney: async (): Promise<{
+    status: string;
+    steps?: Array<{
+      key: string;
+      label: string;
+      status: 'complete' | 'needs_attention' | 'pending';
+      detail: string;
+      progress: { current: number; target: number } | null;
+    }>;
+    overall_progress?: { complete: number; total: number };
+    message?: string;
+  }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/onboarding/journey`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
   resolveTriage: async (id: string, action: string) => {
     const res = await fetch(`${API_BASE_URL}/api/triage/resolve`, {
       method: 'POST',
@@ -120,8 +146,8 @@ export const api = {
     });
     return res.json();
   },
-  triggerPipeline: async () => {
-    const res = await fetch(`${API_BASE_URL}/api/feeds/trigger-pipeline`, {
+  triggerPipeline: async (environment: 'sandbox' | 'production' = 'sandbox') => {
+    const res = await fetch(`${API_BASE_URL}/api/feeds/trigger-pipeline?environment=${environment}`, {
       method: 'POST',
     });
     return res.json();
@@ -228,6 +254,32 @@ export const api = {
   },
   searchPlaces: async (query: string) => {
     const res = await fetch(`${API_BASE_URL}/api/places/search?query=${encodeURIComponent(query)}`);
+    return res.json();
+  },
+  /** Reads a Partner Portal screenshot: always returns a plain-language
+   * summary + next steps, and only for the Ingestion History screen type
+   * also returns advisory per-feed accept/reject suggestions -- never a
+   * silent status write. */
+  analyzeFeedScreenshot: async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(`${API_BASE_URL}/api/upload/feed-screenshot`, {
+      method: 'POST',
+      body: formData,
+    });
+    return res.json();
+  },
+  /** Suggests Google Maps URLs for entities Google's portal couldn't
+   * auto-match, from a Partner Portal CSV export -- suggestions only, no
+   * write-back to Google. */
+  assistEntityMatch: async (file: File, orgId?: string) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (orgId) formData.append('org_id', orgId);
+    const res = await fetch(`${API_BASE_URL}/api/entity-match/assist`, {
+      method: 'POST',
+      body: formData,
+    });
     return res.json();
   },
   /** Streams the EntityMatcher stage only (Places resolution + agent review).

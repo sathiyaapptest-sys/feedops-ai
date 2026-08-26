@@ -1,9 +1,8 @@
 import { UploadCloud } from 'lucide-react';
-import { BulkUpload } from './BulkUpload';
-import { BulkMenuUpload } from './BulkMenuUpload';
 import { FeedHealth } from './FeedHealth';
 import { FeedStatus } from './FeedStatus';
 import { ConversionTracking } from './ConversionTracking';
+import { EntityMatchAssist } from './EntityMatchAssist';
 
 export function AggregatorServices() {
   return (
@@ -13,11 +12,10 @@ export function AggregatorServices() {
         Services
       </h1>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <BulkUpload />
-        <BulkMenuUpload />
         <FeedStatus />
         <FeedHealth />
         <ConversionTracking />
+        <EntityMatchAssist />
       </div>
     </div>
   );

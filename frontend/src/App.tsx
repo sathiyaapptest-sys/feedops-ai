@@ -3,6 +3,7 @@ import Login from './components/Auth/Login';
 import AggregatorLayout from './components/Layout/AggregatorLayout';
 import MerchantLayout from './components/Layout/MerchantLayout';
 import { ReadinessScorecard } from './components/Aggregator/ReadinessScorecard';
+import { OnboardingJourney } from './components/OnboardingJourney';
 import { TriageQueue } from './components/Aggregator/TriageQueue';
 import { AggregatorServices } from './components/Aggregator/AggregatorServices';
 import { Merchants } from './components/Aggregator/Merchants';
@@ -29,6 +30,7 @@ function App() {
           <Route index element={<Navigate to="/aggregator/dashboard" replace />} />
           <Route path="dashboard" element={
             <div className="space-y-6">
+              <OnboardingJourney />
               <ReadinessScorecard />
               <TriageQueue />
             </div>

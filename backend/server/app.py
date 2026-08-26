@@ -4,6 +4,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -20,6 +21,9 @@ from backend.tools.menu_extractor import ImageMenuExtractor
 from backend.tools.excel_parser import SpreadsheetFeedParser
 from backend.tools.data_adapter import slugify_store_id
 from backend.tools.places_matcher import GooglePlacesClient, resolve_entity_match
+from backend.tools.feed_screenshot_analyzer import FeedScreenshotAnalyzer
+from backend.tools.entity_match_assist import parse_entity_csv, suggest_matches
+from backend.tools.onboarding_journey import compute_journey
 from backend.server.auth import get_current_user
 from backend.agent.orchestrator import FeedOpsOrchestrator
 from backend.db.firestore_client import (
@@ -65,6 +69,8 @@ class OrganizationConfigIn(BaseModel):
     conversion_partner_id: Optional[str] = None
     portal_status_sandbox: Optional[str] = None
     portal_status_production: Optional[str] = None
+    sandbox_to_prod_review_status: Optional[str] = None
+    launch_review_status: Optional[str] = None
 
 
 class ServiceOptionsIn(BaseModel):
@@ -121,7 +127,7 @@ async def create_organization(payload: OrganizationIn, current_user: dict = Depe
         "config": {},
     }
     try:
-        OrganizationRepository().create(org)
+        await asyncio.to_thread(OrganizationRepository().create, org)
         return {"status": "created", "org": org}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -130,7 +136,7 @@ async def create_organization(payload: OrganizationIn, current_user: dict = Depe
 @app.get("/api/organizations/{org_id}")
 async def get_organization(org_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        org = OrganizationRepository().get(org_id)
+        org = await asyncio.to_thread(OrganizationRepository().get, org_id)
         if not org:
             return {"status": "error", "message": "Organization not found."}
         return {"status": "ok", "org": org}
@@ -147,7 +153,7 @@ async def update_organization_config(
     walkthrough guide for where to find these in the portal."""
     config = {k: v for k, v in payload.model_dump().items() if v is not None}
     try:
-        OrganizationRepository().update_config(org_id, config)
+        await asyncio.to_thread(OrganizationRepository().update_config, org_id, config)
         return {"status": "updated", "config": config}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -190,7 +196,7 @@ async def get_merchant_profile(current_user: dict = Depends(get_current_user)):
     if not email:
         return {"status": "error", "message": "No email on the authenticated user."}
     try:
-        record = MerchantRepository().get(email)
+        record = await asyncio.to_thread(MerchantRepository().get, email)
         return {"status": "success", "profile": record}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -212,7 +218,7 @@ async def save_merchant_profile(payload: MerchantProfileIn, current_user: dict =
     store_id = email
     try:
         repo = MerchantRepository()
-        existing = repo.get(store_id)
+        existing = await asyncio.to_thread(repo.get, store_id)
         record: Dict[str, Any] = {
             "store_id": store_id,
             "name": payload.storeName,
@@ -226,7 +232,7 @@ async def save_merchant_profile(payload: MerchantProfileIn, current_user: dict =
         }
         if not existing:
             record["status"] = STATUS_NEW
-        repo.upsert({k: v for k, v in record.items() if v is not None})
+        await asyncio.to_thread(repo.upsert, {k: v for k, v in record.items() if v is not None})
         return {"status": "success", "store_id": store_id}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -246,7 +252,7 @@ async def audit_merchant(current_user: dict = Depends(get_current_user)):
             yield 'data: {"agent_name": "SchemaAuditorAgent", "stage": "schema_compilation", "status": "flagged", "detail": "No authenticated email on this session."}\n\n'
         return StreamingResponse(error_stream(), media_type="text/event-stream")
 
-    merchant = MerchantRepository().get(email)
+    merchant = await asyncio.to_thread(MerchantRepository().get, email)
     if not merchant:
         async def missing_stream():
             yield 'data: {"agent_name": "SchemaAuditorAgent", "stage": "schema_compilation", "status": "flagged", "detail": "No merchant profile on file yet -- complete Onboard Store first."}\n\n'
@@ -269,7 +275,7 @@ async def get_merchant_audit(current_user: dict = Depends(get_current_user)):
     if not email:
         return {"status": "error", "message": "No email on the authenticated user."}
     try:
-        record = MerchantRepository().get(email) or {}
+        record = await asyncio.to_thread(MerchantRepository().get, email) or {}
         return {
             "status": "success",
             "compiled_feeds": record.get("compiled_feeds"),
@@ -291,7 +297,7 @@ async def list_merchants():
     someone acts on it, not in the roster of merchants actually being served.
     """
     try:
-        merchants = MerchantRepository().list_all()
+        merchants = await asyncio.to_thread(MerchantRepository().list_all)
         validated = [m for m in merchants if m.get("status") in (STATUS_MATCHED, STATUS_APPROVED)]
         return {"merchants": validated}
     except Exception as e:
@@ -301,7 +307,7 @@ async def list_merchants():
 async def get_triage_queue():
     """Returns merchants flagged for manual review (< 90% Places match confidence)."""
     try:
-        queue = MerchantRepository().list_by_status(STATUS_NEEDS_REVIEW)
+        queue = await asyncio.to_thread(MerchantRepository().list_by_status, STATUS_NEEDS_REVIEW)
         return {"queue": queue}
     except Exception as e:
         return {"queue": [], "error": str(e)}
@@ -314,7 +320,7 @@ async def resolve_triage(request: Request):
     action = data.get("action")
     status = STATUS_APPROVED if action == "approve" else STATUS_REJECTED
     try:
-        MerchantRepository().update_status(merchant_id, status)
+        await asyncio.to_thread(MerchantRepository().update_status, merchant_id, status)
         return {"status": "resolved", "id": merchant_id, "action": action}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -323,7 +329,7 @@ async def resolve_triage(request: Request):
 async def feeds_readiness():
     """Computes the live Launch Readiness Scorecard from real merchant records."""
     try:
-        summary = MerchantRepository().readiness_summary()
+        summary = await asyncio.to_thread(MerchantRepository().readiness_summary)
         return {
             "score": summary["score"],
             "status": "Launch Ready \U0001f7e2" if summary["score"] >= 100 else "In Progress",
@@ -337,12 +343,14 @@ async def feeds_readiness():
         return {"score": 0, "status": "Unavailable", "metrics": {}, "error": str(e)}
 
 @app.post("/api/feeds/trigger-pipeline")
-async def trigger_pipeline():
+async def trigger_pipeline(environment: str = "sandbox"):
     """Runs the real daily feed push (closed-merchant guard, compile, SFTP upload) on demand."""
+    if environment not in ("sandbox", "production"):
+        return {"ok": False, "error": f"environment must be 'sandbox' or 'production', got '{environment}'."}
     # run_daily_feed_push is a synchronous CLI job entrypoint that manages its own
     # event loop internally (asyncio.run); to_thread keeps that safe to call from
     # inside FastAPI's already-running event loop.
-    summary = await asyncio.to_thread(run_daily_feed_push, "sandbox")
+    summary = await asyncio.to_thread(run_daily_feed_push, environment)
     return summary
 
 class BatchVerifyIn(BaseModel):
@@ -355,15 +363,54 @@ async def list_batches(pending_only: bool = False):
     human's manual Partner Portal -> Ingestion -> History check."""
     try:
         repo = UploadBatchRepository()
-        batches = repo.list_pending_verification() if pending_only else repo.list_all()
+        batches = await asyncio.to_thread(repo.list_pending_verification if pending_only else repo.list_all)
         return {"batches": batches}
     except Exception as e:
         return {"batches": [], "error": str(e)}
 
+def _read_feed_file(path: str) -> Any:
+    with open(path, "r") as f:
+        return json.load(f)
+
+@app.get("/api/batches/{batch_id}/feed-content")
+async def get_batch_feed_content(batch_id: str):
+    """
+    Reads the actual compiled entity/action/service feed rows for a batch, for
+    the same "preview what would be sent to Google" toggle Services.tsx already
+    gives merchants. Unlike the merchant-side SchemaAuditor (which returns
+    compiled content directly), ActionsCenterFeedCompiler writes each feed to a
+    local JSON file and only stores the file PATH on the batch document -- so
+    this only works while the same server instance that ran the push is still
+    alive with that file on disk (fine for this app's current in-process
+    "Upload Now" flow; a real distributed deployment running the daily push as
+    a separate Cloud Run Job would need real storage instead, not local disk).
+    Missing files are reported per feed type rather than failing the whole request.
+    """
+    try:
+        batch = await asyncio.to_thread(UploadBatchRepository().get, batch_id)
+        if not batch:
+            return {"status": "error", "message": "Batch not found."}
+
+        feed_files = batch.get("feed_files") or {}
+        feeds: Dict[str, Any] = {}
+        missing: List[str] = []
+        for feed_type in ("entity", "action", "service"):
+            path = feed_files.get(feed_type)
+            if not path:
+                continue
+            try:
+                feeds[feed_type] = await asyncio.to_thread(_read_feed_file, path)
+            except Exception:
+                missing.append(feed_type)
+
+        return {"status": "ok", "feeds": feeds, "missing": missing}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/batches/{batch_id}")
 async def get_batch(batch_id: str):
     try:
-        batch = UploadBatchRepository().get(batch_id)
+        batch = await asyncio.to_thread(UploadBatchRepository().get, batch_id)
         if not batch:
             return {"status": "error", "message": "Batch not found."}
         return {"status": "ok", "batch": batch}
@@ -386,7 +433,7 @@ async def verify_batch(batch_id: str, payload: BatchVerifyIn, current_user: dict
         }
     try:
         verified_by = current_user.get("email") or current_user.get("uid", "unknown")
-        UploadBatchRepository().mark_verified(batch_id, payload.status, verified_by, payload.notes)
+        await asyncio.to_thread(UploadBatchRepository().mark_verified, batch_id, payload.status, verified_by, payload.notes)
         return {"status": "recorded", "batch_id": batch_id, "verification_status": payload.status}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -411,7 +458,7 @@ async def verify_batch_feed(batch_id: str, payload: FeedVerifyIn, current_user: 
         }
     try:
         verified_by = current_user.get("email") or current_user.get("uid", "unknown")
-        UploadBatchRepository().mark_feed_status(batch_id, payload.feed_type, payload.status, verified_by)
+        await asyncio.to_thread(UploadBatchRepository().mark_feed_status, batch_id, payload.feed_type, payload.status, verified_by)
         return {"status": "recorded", "batch_id": batch_id, "feed_type": payload.feed_type, "feed_status": payload.status}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -440,7 +487,7 @@ async def trigger_conversion_check(environment: str = "sandbox", current_user: d
     org_id = current_user.get("uid")
     if org_id:
         try:
-            org = OrganizationRepository().get(org_id)
+            org = await asyncio.to_thread(OrganizationRepository().get, org_id)
             partner_id = (org or {}).get("config", {}).get("conversion_partner_id") or None
         except Exception as e:
             logger.warning(f"Could not load org config for '{org_id}': {e}")
@@ -460,7 +507,7 @@ async def list_conversion_checks():
     keeps (which doesn't survive between separate Cloud Run Job executions).
     """
     try:
-        checks = ConversionCheckRepository().list_all()
+        checks = await asyncio.to_thread(ConversionCheckRepository().list_all)
         cutoff = datetime.now(timezone.utc) - timedelta(days=CONVERSION_COMPLIANCE_WINDOW_DAYS)
 
         def _within_window(c: Dict[str, Any]) -> bool:
@@ -486,6 +533,30 @@ async def list_conversion_checks():
         }
     except Exception as e:
         return {"checks": [], "compliant": False, "events_in_window": 0, "error": str(e)}
+
+@app.get("/api/onboarding/journey")
+async def get_onboarding_journey(current_user: dict = Depends(get_current_user)):
+    """
+    Assembles the 7-step Google Ordering Redirect onboarding journey (Setup ->
+    Feeds ready in Sandbox -> Conversion Tracking in Sandbox -> Sandbox-to-
+    Production Review -> Feeds ready in Production -> Conversion Tracking in
+    Production -> Launch Review) for the authenticated org, mirroring the
+    status language of Google's own Partner Portal onboarding-plan screen,
+    which this app has no API to query directly. Aggregator-only in practice
+    (Actions Center Ordering Redirect requires an Aggregator/Partner ID and a
+    multi-merchant feed -- not applicable to a single-location merchant), but
+    this endpoint itself is role-agnostic like the rest of OrganizationRepository.
+    """
+    org_id = current_user.get("uid")
+    if not org_id:
+        return {"status": "error", "message": "No authenticated user."}
+    try:
+        org = await asyncio.to_thread(OrganizationRepository().get, org_id)
+        batches = await asyncio.to_thread(UploadBatchRepository().list_all)
+        checks = await asyncio.to_thread(ConversionCheckRepository().list_all)
+        return {"status": "ok", **compute_journey(org, batches, checks)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/support/ask")
 async def ask_support(request: Request):
@@ -520,6 +591,53 @@ async def upload_menu_image(file: UploadFile = File(...)):
         data = extractor.extract_from_file(temp_path)
         os.remove(temp_path)
         return {"status": "success", "data": data.model_dump()}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/upload/feed-screenshot")
+async def upload_feed_screenshot(file: UploadFile = File(...)):
+    """
+    Accepts a screenshot of Google's Partner Portal and returns a
+    plain-language explanation plus, only for the Ingestion History screen
+    type, advisory per-feed accept/reject suggestions. This never writes
+    feed status itself -- the caller (FeedStatus.tsx) still routes any
+    suggestion through the existing Mark Accepted/Rejected buttons for a
+    human to confirm.
+    """
+    temp_path = None
+    try:
+        fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
+        with os.fdopen(fd, 'wb') as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        analyzer = FeedScreenshotAnalyzer()
+        data = analyzer.analyze_from_file(temp_path)
+        return {"status": "success", "data": data.model_dump()}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@app.post("/api/entity-match/assist")
+async def entity_match_assist(file: UploadFile = File(...), org_id: Optional[str] = Form(None)):
+    """
+    Accepts Google's Entity-match CSV export and suggests a Google Maps URL
+    for each unmatched/disabled entity, reusing the existing Places-matching
+    engine (resolve_entity_match) and any place_id already stored from prior
+    onboarding. Suggestions only -- there's no API to push a match back to
+    Google, so the human still pastes the URL into Google's Edit match
+    screen themselves.
+    """
+    try:
+        parsed = parse_entity_csv(file.file)
+        result = await suggest_matches(parsed["rows"], org_id)
+        return {
+            "status": "success",
+            "rows_total": len(parsed["rows"]),
+            "errors": parsed["errors"],
+            **result,
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -560,7 +678,7 @@ async def _persist_bulk_merchant(merchant: Dict[str, Any], org_id: str) -> Dict[
         "confidence": match.get("confidence"),
         "place_id": match.get("place_id"),
     }
-    MerchantRepository().upsert({k: v for k, v in record.items() if v is not None})
+    await asyncio.to_thread(MerchantRepository().upsert, {k: v for k, v in record.items() if v is not None})
     return {"store_id": store_id, "name": merchant["name"], "status": status}
 
 @app.post("/api/upload/spreadsheet")
@@ -590,7 +708,7 @@ async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str]
             shutil.copyfileobj(file.file, buffer)
 
         parser = SpreadsheetFeedParser()
-        data = parser.parse_merchants(temp_path, org_id=org_id)
+        data = await asyncio.to_thread(parser.parse_merchants, temp_path, org_id=org_id)
         os.remove(temp_path)
 
         merchants = [m.model_dump() for m in data["merchants"]]
@@ -642,7 +760,7 @@ async def upload_menu_spreadsheet(file: UploadFile = File(...), org_id: Optional
 
         parser = SpreadsheetFeedParser()
         effective_org_id = org_id or "unknown"
-        data = parser.parse_menu(temp_path, org_id=effective_org_id)
+        data = await asyncio.to_thread(parser.parse_menu, temp_path, org_id=effective_org_id)
         os.remove(temp_path)
 
         items = [m.model_dump() for m in data["items"]]
