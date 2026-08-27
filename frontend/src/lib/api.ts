@@ -10,6 +10,13 @@ import { auth } from './firebase';
 const API_BASE_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
 async function getIdToken(): Promise<string | null> {
+  // auth.currentUser is synchronously null immediately after a page load or
+  // hard navigation, until Firebase finishes restoring the persisted session
+  // (usually well under a second, but real -- confirmed live: an auth-
+  // protected call fired from a component's mount-time effect went out with
+  // no Authorization header and came back 401 before this fix). authStateReady()
+  // resolves once that initial restore completes either way (signed in or not).
+  await auth.authStateReady();
   const user = auth.currentUser;
   if (!user) return null;
   try {
@@ -218,6 +225,22 @@ export const api = {
     error?: string;
   }> => {
     const res = await fetch(`${API_BASE_URL}/api/conversion/checks`);
+    return res.json();
+  },
+  /** Same shape as getConversionChecks, scoped to one environment -- for the
+   * Sandbox/Production step pages, which need separate numbers, not the
+   * globally-aggregated ones getConversionChecks returns. */
+  getConversionChecksByEnvironment: async (
+    environment: 'sandbox' | 'production'
+  ): Promise<{
+    checks: any[];
+    compliant: boolean;
+    events_in_window: number;
+    window_days?: number;
+    min_events_required?: number;
+    error?: string;
+  }> => {
+    const res = await fetch(`${API_BASE_URL}/api/conversion/checks/by-environment?environment=${environment}`);
     return res.json();
   },
   uploadMenuImage: async (file: File) => {

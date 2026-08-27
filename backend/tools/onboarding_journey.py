@@ -15,6 +15,9 @@ STATUS_NEEDS_ATTENTION = "needs_attention"
 STATUS_PENDING = "pending"
 
 FEED_STREAK_TARGET_DAYS = 3
+# Google's real launch checklist requires "feeds uploaded consecutively for 3
+# days with at least 10 entities in each feed" -- not just a clean status.
+FEED_STREAK_MIN_ENTITIES = 10
 # Same values as app.py's CONVERSION_COMPLIANCE_MIN_EVENTS / _WINDOW_DAYS,
 # duplicated (not imported) to avoid a backend.server -> backend.tools import
 # cycle -- this module must stay import-free of anything server/Firestore.
@@ -22,6 +25,7 @@ CONVERSION_MIN_EVENTS = 3
 CONVERSION_WINDOW_DAYS = 7
 
 REVIEW_APPROVED = "approved"
+REVIEW_REJECTED = "rejected"
 
 
 def _parse_timestamp(value: Any) -> Optional[datetime]:
@@ -41,9 +45,11 @@ def compute_feed_streak(
     """
     Consecutive most-recent calendar days (looking back from `today`) with at
     least one batch, in `environment`, where every present `feed_status_{type}`
-    field is `confirmed_clean`. Stops at the first failing day (no batch that
-    day, or any non-clean status) or at FEED_STREAK_TARGET_DAYS, whichever
-    comes first.
+    field is `confirmed_clean` AND at least FEED_STREAK_MIN_ENTITIES merchants
+    were in the feed that day (Google's real requirement -- a clean but tiny
+    feed doesn't count). Stops at the first failing day (no batch that day,
+    any non-clean status, or too few entities) or at FEED_STREAK_TARGET_DAYS,
+    whichever comes first.
     """
     today = today or datetime.now(timezone.utc).date()
 
@@ -64,6 +70,9 @@ def compute_feed_streak(
             break
         day_clean = True
         for batch in day_batches:
+            if (batch.get("merchant_count") or 0) < FEED_STREAK_MIN_ENTITIES:
+                day_clean = False
+                break
             for key, value in batch.items():
                 if key.startswith("feed_status_") and value != "confirmed_clean":
                     day_clean = False
@@ -167,10 +176,12 @@ def compute_journey(
     )
 
     # Step 4: Sandbox to Production Review (self-attested)
-    sandbox_review_attested = config.get("sandbox_to_prod_review_status") == REVIEW_APPROVED
+    sandbox_review_value = config.get("sandbox_to_prod_review_status")
     sandbox_review_ready = feeds_sandbox_status == STATUS_COMPLETE and conversion_sandbox_status == STATUS_COMPLETE
-    if sandbox_review_attested:
+    if sandbox_review_value == REVIEW_APPROVED:
         review_status, review_detail = STATUS_COMPLETE, "Approved."
+    elif sandbox_review_value == REVIEW_REJECTED:
+        review_status, review_detail = STATUS_NEEDS_ATTENTION, "Previously rejected -- address the issues, then re-request."
     elif sandbox_review_ready:
         review_status, review_detail = STATUS_NEEDS_ATTENTION, "Ready to request review."
     else:
@@ -200,14 +211,16 @@ def compute_journey(
     )
 
     # Step 7: Launch Review (self-attested)
-    launch_attested = config.get("launch_review_status") == REVIEW_APPROVED
+    launch_value = config.get("launch_review_status")
     launch_ready = (
         review_approved
         and feeds_production_status == STATUS_COMPLETE
         and conversion_production_status == STATUS_COMPLETE
     )
-    if launch_attested:
+    if launch_value == REVIEW_APPROVED:
         launch_status, launch_detail = STATUS_COMPLETE, "Approved -- launched."
+    elif launch_value == REVIEW_REJECTED:
+        launch_status, launch_detail = STATUS_NEEDS_ATTENTION, "Previously rejected -- address the issues, then re-request."
     elif launch_ready:
         launch_status, launch_detail = STATUS_NEEDS_ATTENTION, "Ready to request launch review."
     else:

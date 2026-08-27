@@ -18,7 +18,11 @@ function formatWhen(ts?: string) {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export function ConversionTracking() {
+interface ConversionTrackingProps {
+  environment: 'sandbox' | 'production';
+}
+
+export function ConversionTracking({ environment }: ConversionTrackingProps) {
   const [checks, setChecks] = useState<ConversionCheck[] | null>(null);
   const [compliant, setCompliant] = useState(false);
   const [eventsInWindow, setEventsInWindow] = useState(0);
@@ -30,7 +34,7 @@ export function ConversionTracking() {
 
   const load = useCallback(async () => {
     try {
-      const res = await api.getConversionChecks();
+      const res = await api.getConversionChecksByEnvironment(environment);
       setChecks(res.checks || []);
       setCompliant(res.compliant);
       setEventsInWindow(res.events_in_window || 0);
@@ -40,7 +44,7 @@ export function ConversionTracking() {
     } catch (err: any) {
       setError(err.message || 'Could not load conversion tracking.');
     }
-  }, []);
+  }, [environment]);
 
   useEffect(() => {
     load();
@@ -50,9 +54,9 @@ export function ConversionTracking() {
     setRunning(true);
     setRunResult(null);
     try {
-      const summary = await api.triggerConversionCheck('sandbox');
+      const summary = await api.triggerConversionCheck(environment);
       if (summary.error) {
-        setRunResult(`Could not run conversion check: ${summary.error} Set it under API & Webhooks.`);
+        setRunResult(`Could not run conversion check: ${summary.error} Set it under Setup.`);
       } else {
         setRunResult(
           summary.all_ok
@@ -73,7 +77,7 @@ export function ConversionTracking() {
       <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
         <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
           <Radio className="w-5 h-5 text-blue-500" />
-          Conversion Tracking
+          Conversion Tracking ({environment === 'sandbox' ? 'Sandbox' : 'Production'})
         </h2>
         <button
           onClick={handleRun}

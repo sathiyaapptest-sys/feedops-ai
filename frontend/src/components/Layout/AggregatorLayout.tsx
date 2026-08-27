@@ -1,13 +1,16 @@
 import { Outlet, useNavigate, NavLink } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth } from '../../lib/firebase';
-import { LogOut, LayoutDashboard, Settings, Layers, UploadCloud } from 'lucide-react';
+import { LogOut, LayoutDashboard, Layers } from 'lucide-react';
 
+// Nav is deliberately just these two: Dashboard is the 7-step Google
+// Ordering Redirect journey (Setup through Launch Review) -- every step's
+// page is reached by clicking into it from there, not from a flat top-level
+// list. Merchants is roster + entity-matching ops, which isn't part of that
+// journey at all.
 const NAV_ITEMS = [
   { to: '/aggregator/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/aggregator/merchants', label: 'Merchants', icon: Layers },
-  { to: '/aggregator/services', label: 'Services', icon: UploadCloud },
-  { to: '/aggregator/webhooks', label: 'API & Webhooks', icon: Settings },
 ];
 
 export default function AggregatorLayout() {

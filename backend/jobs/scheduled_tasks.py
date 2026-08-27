@@ -59,23 +59,36 @@ CLOSED_EXCLUSION_CONFIDENCE_THRESHOLD = 0.85
 CLOSED_STATUSES = {"CLOSED_TEMPORARILY", "CLOSED_PERMANENTLY"}
 
 
-def _load_merchants(path: str = DEFAULT_SNAPSHOT_PATH) -> List[Dict[str, Any]]:
+def _load_merchants(
+    path: str = DEFAULT_SNAPSHOT_PATH, allow_fixture_fallback: bool = True
+) -> List[Dict[str, Any]]:
     """
     Loads the current merchant list to feed today. Tries Firestore (the live data
-    source) first; falls back to the last known-good JSON snapshot on disk if
-    Firestore is unreachable or unconfigured -- matches the playbook's own guidance
-    (section 6): regenerate from live data when reachable, otherwise re-package the
-    last known-good data rather than skip the day's run entirely.
+    source) first; when `allow_fixture_fallback` is True (the scheduled Cloud Run
+    Job's default -- it must not skip a whole day just because Firestore hiccupped),
+    falls back to the last known-good JSON snapshot on disk if Firestore is
+    unreachable or returns nothing, matching the playbook's own guidance (section 6).
+
+    When `allow_fixture_fallback` is False (the interactive "Upload Now" button),
+    returns an empty list in either of those cases instead. An aggregator who
+    hasn't uploaded any real merchants yet has zero active merchants in Firestore
+    too -- without this flag, clicking Upload Now would silently push the fixture
+    snapshot's 12 fake chain restaurants (Burger King, Pizza Hut, ...) and report
+    it as a real success.
     """
     try:
         merchants = MerchantRepository().list_active()
         if merchants:
             logger.info(f"Loaded {len(merchants)} active merchant(s) from Firestore.")
             return merchants
-        logger.warning("Firestore returned no active merchants; falling back to JSON snapshot.")
+        logger.warning("Firestore returned no active merchants.")
     except Exception as e:
-        logger.warning(f"Firestore unreachable ({e}); falling back to JSON snapshot.")
+        logger.warning(f"Firestore unreachable ({e}).")
 
+    if not allow_fixture_fallback:
+        return []
+
+    logger.warning("Falling back to JSON snapshot.")
     return _load_from_json_snapshot(path)
 
 
@@ -200,11 +213,32 @@ def _sftp_client_for(environment: str) -> GoogleSFTPClient:
     return GoogleSFTPClient(private_key_path=key_path, username=username, dry_run=dry_run)
 
 
-def run_daily_feed_push(environment: str = "sandbox", snapshot_path: str = DEFAULT_SNAPSHOT_PATH) -> Dict[str, Any]:
+def run_daily_feed_push(
+    environment: str = "sandbox",
+    snapshot_path: str = DEFAULT_SNAPSHOT_PATH,
+    allow_fixture_fallback: bool = True,
+) -> Dict[str, Any]:
     """Regenerates the feed bundle from the current merchant data and uploads it."""
     logger.info(f"Starting daily feed push ({environment})...")
 
-    merchants = _load_merchants(snapshot_path)
+    merchants = _load_merchants(snapshot_path, allow_fixture_fallback=allow_fixture_fallback)
+    if not merchants:
+        logger.warning("No merchant data available -- nothing to push.")
+        return {
+            "batch_id": None,
+            "environment": environment,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "merchants_in_snapshot": 0,
+            "merchants_excluded": 0,
+            "merchants_pushed": 0,
+            "feed_files": [],
+            "upload": None,
+            "ok": False,
+            "needs_portal_verification": False,
+            "batch_recorded": False,
+            "error": "No merchant data on file yet -- upload merchants before pushing a feed.",
+        }
+
     kept, excluded = _apply_closed_merchant_guard(merchants)
     _append_exclude_list(excluded)
 

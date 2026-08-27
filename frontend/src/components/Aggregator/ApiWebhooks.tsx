@@ -31,6 +31,13 @@ export function ApiWebhooks() {
 
   useEffect(() => {
     const load = async () => {
+      // auth.currentUser is synchronously null immediately after a fresh
+      // page load, until Firebase finishes restoring the persisted session --
+      // confirmed live: this page reported "Not signed in" on a direct
+      // navigation despite a genuinely active session (same race fixed in
+      // api.ts's getIdToken() this session, but this component reads
+      // auth.currentUser directly instead of going through that helper).
+      await auth.authStateReady();
       const user = auth.currentUser;
       if (!user) {
         setError('Not signed in.');

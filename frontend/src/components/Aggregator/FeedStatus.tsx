@@ -38,7 +38,11 @@ const SCREEN_TYPE_NOTE: Record<string, string> = {
   other: 'No per-feed suggestion applies to this screen.',
 };
 
-export function FeedStatus() {
+interface FeedStatusProps {
+  environment: 'sandbox' | 'production';
+}
+
+export function FeedStatus({ environment }: FeedStatusProps) {
   const [latest, setLatest] = useState<Batch | null | undefined>(undefined); // undefined = loading
   const [error, setError] = useState<string | null>(null);
   const [markingKey, setMarkingKey] = useState<string | null>(null);
@@ -54,18 +58,20 @@ export function FeedStatus() {
   const load = useCallback(async () => {
     try {
       const res = await api.getBatches();
-      const sorted = [...(res.batches || [])].sort((a, b) => {
-        const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
-        const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
-        return tb - ta;
-      });
+      const sorted = [...(res.batches || [])]
+        .filter((b) => b.environment === environment)
+        .sort((a, b) => {
+          const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+          const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+          return tb - ta;
+        });
       setLatest(sorted[0] || null);
       setError(null);
     } catch (err: any) {
       setError(err.message || 'Could not load feed status.');
       setLatest(null);
     }
-  }, []);
+  }, [environment]);
 
   useEffect(() => {
     load();
@@ -152,7 +158,7 @@ export function FeedStatus() {
     <div className="p-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 md:col-span-2">
       <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2 mb-1">
         <FileJson className="w-5 h-5 text-blue-500" />
-        Feed Status
+        Feed Status ({environment === 'sandbox' ? 'Sandbox' : 'Production'})
       </h2>
       <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
         Per-file acceptance for the most recent push -- check Partner Portal &rarr; Ingestion &rarr; History
@@ -168,7 +174,7 @@ export function FeedStatus() {
       {latest === undefined ? (
         <div className="h-16 animate-pulse bg-slate-100 dark:bg-slate-700 rounded-lg" />
       ) : !latest || orderedFeedTypes.length === 0 ? (
-        <p className="text-sm text-slate-500 dark:text-slate-400">No feed pushed yet.</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">No {environment} feed pushed yet.</p>
       ) : (
         <>
           <div className="space-y-2">

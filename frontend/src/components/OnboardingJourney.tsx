@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import { auth } from '../lib/firebase';
-import { Rocket, CheckCircle2, AlertTriangle, Circle, Loader2 } from 'lucide-react';
+import { Rocket, CheckCircle2, AlertTriangle, Circle, Loader2, ChevronRight } from 'lucide-react';
+import { STEP_ROUTES } from './Aggregator/onboarding/steps';
 
 type StepStatus = 'complete' | 'needs_attention' | 'pending';
 
@@ -62,8 +64,10 @@ export function OnboardingJourney() {
   };
 
   useEffect(() => {
-    const user = auth.currentUser;
-    if (user) setOrgId(user.uid);
+    auth.authStateReady().then(() => {
+      const user = auth.currentUser;
+      if (user) setOrgId(user.uid);
+    });
     load();
   }, []);
 
@@ -119,14 +123,20 @@ export function OnboardingJourney() {
                 key={step.key}
                 className="flex items-start justify-between gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700 text-sm"
               >
-                <div className="flex items-start gap-2">
+                <Link
+                  to={STEP_ROUTES[step.key as keyof typeof STEP_ROUTES] || '#'}
+                  className="flex items-start gap-2 flex-1 min-w-0 hover:opacity-80"
+                >
                   <StatusIcon status={step.status} />
-                  <div>
-                    <span className="font-medium text-slate-900 dark:text-white block">{step.label}</span>
+                  <div className="min-w-0">
+                    <span className="font-medium text-slate-900 dark:text-white flex items-center gap-1">
+                      {step.label}
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                    </span>
                     <span className="text-xs text-slate-500 dark:text-slate-400">{step.detail}</span>
                     {step.progress && <ProgressSegments current={step.progress.current} target={step.progress.target} />}
                   </div>
-                </div>
+                </Link>
 
                 {isReviewStep && step.status === 'needs_attention' && (
                   <button

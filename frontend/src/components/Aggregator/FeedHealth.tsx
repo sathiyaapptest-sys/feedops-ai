@@ -35,44 +35,52 @@ function formatWhen(created_at?: string) {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export function FeedHealth() {
+interface FeedHealthProps {
+  environment: 'sandbox' | 'production';
+}
+
+export function FeedHealth({ environment }: FeedHealthProps) {
   const [batches, setBatches] = useState<Batch[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
   const [triggerResult, setTriggerResult] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
-  const [environment, setEnvironment] = useState<'sandbox' | 'production'>('sandbox');
   const [productionUnlocked, setProductionUnlocked] = useState<boolean | null>(null); // null = loading
 
   useEffect(() => {
+    if (environment !== 'production') return;
     api.getOnboardingJourney().then((res) => {
       const reviewStep = res.steps?.find((s) => s.key === 'sandbox_to_prod_review');
       setProductionUnlocked(reviewStep?.status === 'complete');
     }).catch(() => setProductionUnlocked(false));
-  }, []);
+  }, [environment]);
 
   const load = useCallback(async () => {
     try {
       const res = await api.getBatches();
-      const sorted = [...(res.batches || [])].sort((a, b) => {
-        const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
-        const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
-        return tb - ta;
-      });
+      const sorted = [...(res.batches || [])]
+        .filter((b) => b.environment === environment)
+        .sort((a, b) => {
+          const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+          const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+          return tb - ta;
+        });
       setBatches(sorted);
       setError(null);
     } catch (err: any) {
       setError(err.message || 'Could not load upload batch history.');
     }
-  }, []);
+  }, [environment]);
 
   useEffect(() => {
     load();
   }, [load]);
 
+  const uploadLocked = environment === 'production' && !productionUnlocked;
+
   const handleUploadNow = async () => {
-    if (environment === 'production' && !productionUnlocked) {
+    if (uploadLocked) {
       setTriggerResult('Production is locked until Sandbox to Production Review is approved.');
       return;
     }
@@ -83,6 +91,8 @@ export function FeedHealth() {
       setTriggerResult(
         summary.ok
           ? `Push complete: ${summary.merchants_pushed} merchant(s) uploaded${summary.merchants_excluded ? `, ${summary.merchants_excluded} excluded as closed` : ''}.`
+          : summary.error
+          ? summary.error
           : `Push finished with errors -- see batch ${summary.batch_id} below.`
       );
       await load();
@@ -117,33 +127,20 @@ export function FeedHealth() {
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
           <UploadCloud className="w-5 h-5 text-blue-500" />
-          Feed Health
+          Feed Health ({environment === 'sandbox' ? 'Sandbox' : 'Production'})
         </h2>
-        <div className="flex items-center gap-2">
-          <select
-            value={environment}
-            onChange={(e) => setEnvironment(e.target.value as 'sandbox' | 'production')}
-            disabled={triggering}
-            title={!productionUnlocked ? 'Production unlocks once Sandbox to Production Review is approved (see the onboarding tracker on the dashboard).' : undefined}
-            className="px-2 py-2 text-sm border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
-          >
-            <option value="sandbox">Sandbox</option>
-            <option value="production" disabled={!productionUnlocked}>
-              Production{!productionUnlocked ? ' (locked)' : ''}
-            </option>
-          </select>
-          <button
-            onClick={handleUploadNow}
-            disabled={triggering}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
-          >
-            {triggering ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
-            Upload Now
-          </button>
-        </div>
+        <button
+          onClick={handleUploadNow}
+          disabled={triggering || uploadLocked}
+          title={uploadLocked ? 'Locked until Sandbox to Production Review is approved.' : undefined}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
+        >
+          {triggering ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
+          Upload Now
+        </button>
       </div>
 
-      {environment === 'production' && !productionUnlocked && (
+      {uploadLocked && (
         <div className="mb-4 p-3 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 rounded-lg text-sm">
           Production is locked until Sandbox to Production Review is approved -- see the onboarding tracker on the Dashboard.
         </div>
@@ -175,7 +172,7 @@ export function FeedHealth() {
       {batches === null ? (
         <div className="h-16 animate-pulse bg-slate-100 dark:bg-slate-700 rounded-lg" />
       ) : batches.length === 0 ? (
-        <p className="text-sm text-slate-500 dark:text-slate-400">No upload batches yet.</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">No {environment} upload batches yet.</p>
       ) : (
         <>
           <div className="flex items-center gap-1.5 mb-4 flex-wrap">

@@ -13,10 +13,13 @@ export function TriageQueue() {
     api.getTriageQueue().then(data => setQueue(data.queue)).catch(console.error);
   };
 
-  const handleResolve = async (id: string, action: string) => {
-    await api.resolveTriage(id, action);
-    // Remove from UI optimistically or refetch
-    setQueue(q => q.filter(item => item.id !== id));
+  const handleResolve = async (storeId: string, action: string) => {
+    // Merchant records are keyed by store_id, never a plain "id" field --
+    // resolve_triage's payload/MerchantRepository.update_status both expect
+    // that key. Sending item.id here previously sent undefined, so Approve/
+    // Reject silently resolved nothing.
+    await api.resolveTriage(storeId, action);
+    setQueue(q => q.filter(item => item.store_id !== storeId));
   };
 
   return (
@@ -41,7 +44,7 @@ export function TriageQueue() {
             </thead>
             <tbody>
               {queue.map(item => (
-                <tr key={item.id} className="bg-white dark:bg-slate-800 border-b dark:border-slate-700">
+                <tr key={item.store_id} className="bg-white dark:bg-slate-800 border-b dark:border-slate-700">
                   <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{item.name}</td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${item.confidence < 0.8 ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800'}`}>
@@ -50,14 +53,14 @@ export function TriageQueue() {
                   </td>
                   <td className="px-4 py-3">{item.issue}</td>
                   <td className="px-4 py-3 flex gap-2">
-                    <button 
-                      onClick={() => handleResolve(item.id, 'approve')}
+                    <button
+                      onClick={() => handleResolve(item.store_id, 'approve')}
                       className="p-1 text-green-600 hover:bg-green-50 rounded" title="Approve"
                     >
                       <CheckCircle className="w-5 h-5" />
                     </button>
-                    <button 
-                      onClick={() => handleResolve(item.id, 'reject')}
+                    <button
+                      onClick={() => handleResolve(item.store_id, 'reject')}
                       className="p-1 text-red-600 hover:bg-red-50 rounded" title="Reject"
                     >
                       <XCircle className="w-5 h-5" />

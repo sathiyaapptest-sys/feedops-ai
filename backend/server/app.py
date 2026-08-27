@@ -23,7 +23,7 @@ from backend.tools.data_adapter import slugify_store_id
 from backend.tools.places_matcher import GooglePlacesClient, resolve_entity_match
 from backend.tools.feed_screenshot_analyzer import FeedScreenshotAnalyzer
 from backend.tools.entity_match_assist import parse_entity_csv, suggest_matches
-from backend.tools.onboarding_journey import compute_journey
+from backend.tools.onboarding_journey import compute_journey, compute_conversion_compliance
 from backend.server.auth import get_current_user
 from backend.agent.orchestrator import FeedOpsOrchestrator
 from backend.db.firestore_client import (
@@ -344,13 +344,19 @@ async def feeds_readiness():
 
 @app.post("/api/feeds/trigger-pipeline")
 async def trigger_pipeline(environment: str = "sandbox"):
-    """Runs the real daily feed push (closed-merchant guard, compile, SFTP upload) on demand."""
+    """
+    Runs the real daily feed push (closed-merchant guard, compile, SFTP upload) on
+    demand. allow_fixture_fallback=False -- unlike the scheduled Cloud Run Job, an
+    interactive click here must never silently substitute the fixture snapshot's
+    fake chain-restaurant data when there's no real merchant data on file yet, and
+    report that as a successful push.
+    """
     if environment not in ("sandbox", "production"):
         return {"ok": False, "error": f"environment must be 'sandbox' or 'production', got '{environment}'."}
     # run_daily_feed_push is a synchronous CLI job entrypoint that manages its own
     # event loop internally (asyncio.run); to_thread keeps that safe to call from
     # inside FastAPI's already-running event loop.
-    summary = await asyncio.to_thread(run_daily_feed_push, environment)
+    summary = await asyncio.to_thread(run_daily_feed_push, environment, allow_fixture_fallback=False)
     return summary
 
 class BatchVerifyIn(BaseModel):
@@ -530,6 +536,29 @@ async def list_conversion_checks():
             "events_in_window": events_in_window,
             "window_days": CONVERSION_COMPLIANCE_WINDOW_DAYS,
             "min_events_required": CONVERSION_COMPLIANCE_MIN_EVENTS,
+        }
+    except Exception as e:
+        return {"checks": [], "compliant": False, "events_in_window": 0, "error": str(e)}
+
+@app.get("/api/conversion/checks/by-environment")
+async def list_conversion_checks_by_environment(environment: str = "sandbox"):
+    """
+    Same compliance rule as list_conversion_checks(), but scoped to one
+    environment -- that endpoint aggregates across sandbox and production
+    together, which doesn't work for a per-step (Sandbox vs Production) page.
+    Reuses compute_conversion_compliance (backend/tools/onboarding_journey.py)
+    rather than a third copy of the same math.
+    """
+    try:
+        checks = await asyncio.to_thread(ConversionCheckRepository().list_all)
+        scoped = [c for c in checks if c.get("environment") == environment]
+        compliance = compute_conversion_compliance(checks, environment)
+        return {
+            "checks": sorted(scoped, key=lambda c: c.get("timestamp") or "", reverse=True),
+            "compliant": compliance["compliant"],
+            "events_in_window": compliance["current"],
+            "window_days": CONVERSION_COMPLIANCE_WINDOW_DAYS,
+            "min_events_required": compliance["target"],
         }
     except Exception as e:
         return {"checks": [], "compliant": False, "events_in_window": 0, "error": str(e)}

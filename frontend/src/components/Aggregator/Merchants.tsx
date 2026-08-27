@@ -3,6 +3,8 @@ import { api } from '../../lib/api';
 import { Layers } from 'lucide-react';
 import { BulkUpload } from './BulkUpload';
 import { BulkMenuUpload } from './BulkMenuUpload';
+import { ReadinessScorecard } from './ReadinessScorecard';
+import { TriageQueue } from './TriageQueue';
 
 const STATUS_STYLES: Record<string, string> = {
   matched: 'bg-green-100 text-green-800',
@@ -52,6 +54,9 @@ export function Merchants() {
           className="w-64 px-3 py-2 text-sm border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
         />
       </div>
+
+      <ReadinessScorecard />
+      <TriageQueue />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <BulkUpload />
