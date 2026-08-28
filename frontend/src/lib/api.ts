@@ -67,6 +67,14 @@ export const api = {
     const res = await fetch(`${API_BASE_URL}/api/merchants`);
     return res.json();
   },
+  /** Soft-removes a merchant (sets status to excluded_closed) -- immediately
+   * stops it from being fed, without a hard delete of its history. */
+  removeMerchant: async (storeId: string): Promise<{ status: string; message?: string }> => {
+    const res = await fetch(`${API_BASE_URL}/api/merchants/${encodeURIComponent(storeId)}/remove`, {
+      method: 'POST',
+    });
+    return res.json();
+  },
   /** Reads one organization's record (config, portal status). Auth-protected. */
   getOrganization: async (orgId: string): Promise<{ status: string; org?: any; message?: string }> => {
     const token = await getIdToken();
@@ -108,6 +116,11 @@ export const api = {
       portal_status_production?: string;
       sandbox_to_prod_review_status?: string;
       launch_review_status?: string;
+      menu_feeds_enabled?: boolean;
+      generic_sftp_username_sandbox?: string;
+      generic_sftp_username_production?: string;
+      menu_sandbox_review_status?: string;
+      menu_launch_review_status?: string;
     }
   ): Promise<{ status: string; config?: any; message?: string }> => {
     const token = await getIdToken();
@@ -143,6 +156,38 @@ export const api = {
     const res = await fetch(`${API_BASE_URL}/api/onboarding/journey`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
+    return res.json();
+  },
+  /** The separate, opt-in 5-step Menu Feeds journey -- always returned (with
+   * `enabled: false` if not opted in) rather than a second fetch to check first. */
+  getMenuOnboardingJourney: async (): Promise<{
+    status: string;
+    enabled?: boolean;
+    steps?: Array<{
+      key: string;
+      label: string;
+      status: 'complete' | 'needs_attention' | 'pending';
+      detail: string;
+      progress: { current: number; target: number } | null;
+    }>;
+    overall_progress?: { complete: number; total: number };
+    message?: string;
+  }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/onboarding/menu-journey`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
+  triggerMenuFeedPipeline: async (environment: 'sandbox' | 'production' = 'sandbox') => {
+    const res = await fetch(`${API_BASE_URL}/api/menu-feeds/trigger-pipeline?environment=${environment}`, {
+      method: 'POST',
+    });
+    return res.json();
+  },
+  getMenuFeedBatches: async (environment?: 'sandbox' | 'production'): Promise<{ batches: any[]; error?: string }> => {
+    const qs = environment ? `?environment=${environment}` : '';
+    const res = await fetch(`${API_BASE_URL}/api/menu-feeds/batches${qs}`);
     return res.json();
   },
   resolveTriage: async (id: string, action: string) => {
@@ -189,7 +234,7 @@ export const api = {
    * ingestion history, not one blended result for the whole batch. */
   verifyBatchFeed: async (
     batchId: string,
-    feedType: 'entity' | 'action' | 'service',
+    feedType: 'entity' | 'action' | 'service' | 'menu',
     status: 'confirmed_clean' | 'flagged_errors'
   ): Promise<{ status: string; batch_id?: string; feed_type?: string; feed_status?: string; message?: string }> => {
     const token = await getIdToken();
@@ -252,9 +297,10 @@ export const api = {
     });
     return res.json();
   },
-  uploadSpreadsheet: async (file: File) => {
+  uploadSpreadsheet: async (file: File, replaceExisting: boolean = false) => {
     const formData = new FormData();
     formData.append('file', file);
+    if (replaceExisting) formData.append('replace_existing', 'true');
     const res = await fetch(`${API_BASE_URL}/api/upload/spreadsheet`, {
       method: 'POST',
       body: formData,

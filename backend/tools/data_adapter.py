@@ -11,11 +11,19 @@ time, and validates every row against it with clear, structured per-row
 errors instead of skipping or fabricating data.
 """
 
+import logging
+import os
 import re
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
+from google import genai
+from google.genai import types as genai_types
 from pydantic import BaseModel
+
+logger = logging.getLogger("feedops.data_adapter")
+
+GEMMA_MODEL = os.getenv("GEMMA_MODEL", "gemma-4-26b-a4b-it")
 
 def slugify_store_id(org_id: str, name: str) -> str:
     """
@@ -61,10 +69,67 @@ def _normalize(column_name: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", column_name.lower()).strip()
 
 
+class _ColumnMatch(BaseModel):
+    canonical_field: str
+    column_name: str
+
+
+class _ColumnMatchList(BaseModel):
+    matches: List[_ColumnMatch]
+
+
+def _infer_unmapped_fields_with_gemma(unmapped_fields: List[str], leftover_columns: List[str]) -> Dict[str, str]:
+    """
+    Best-effort semantic column match for canonical fields the exact-alias
+    table above missed (e.g. a column named "Outlet" or "Trading As" instead
+    of any known alias). Gemma is the right-sized model for this -- it's a
+    small, low-stakes text-matching task, not worth a full Gemini call.
+
+    Uses response_schema (not just response_mime_type) because unconstrained
+    JSON mode is inconsistent about shape on a model this size -- observed it
+    return a bare {field: column} dict, a list of {field: column} dicts, and
+    a list of {"canonical_field", "column_name"} dicts across otherwise
+    identical calls. A pydantic response_schema forces one shape reliably.
+
+    Never guesses past what it's told to consider: only `unmapped_fields` and
+    `leftover_columns` are offered, and the result is filtered back down to
+    that same set, so a hallucinated field/column name can't sneak into the
+    adapter. Never raises -- an empty return is treated exactly like "still
+    unmapped" by the caller, and validate_and_transform's existing
+    missing-required-field error is the fallback, not a crash.
+    """
+    if not unmapped_fields or not leftover_columns:
+        return {}
+    prompt = (
+        "Match each spreadsheet column to at most one canonical field. Only include a "
+        "match you're confident about; skip a field entirely rather than guess. "
+        f"Canonical fields needing a match: {unmapped_fields}. "
+        f"Available columns: {leftover_columns}."
+    )
+    try:
+        client = genai.Client()
+        response = client.models.generate_content(
+            model=GEMMA_MODEL,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                response_mime_type="application/json", response_schema=_ColumnMatchList
+            ),
+        )
+        matches = response.parsed.matches if response.parsed else []
+        return {
+            m.canonical_field: m.column_name for m in matches
+            if m.canonical_field in unmapped_fields and m.column_name in leftover_columns
+        }
+    except Exception as e:
+        logger.warning(f"Gemma column-matching unavailable ({e}); falling back to unmapped.")
+        return {}
+
+
 def infer_adapter(columns: List[str], org_id: str) -> DataSourceAdapter:
-    """Best-effort column mapping from known aliases. Missing required fields
-    are left unmapped rather than guessed -- validate_and_transform will then
-    surface a clear file-level error instead of silently misreading a column."""
+    """Best-effort column mapping: exact known aliases first, then Gemma for
+    whatever's left over. Fields Gemma also can't place stay unmapped --
+    validate_and_transform will then surface a clear file-level error instead
+    of silently misreading a column."""
     normalized = {col: _normalize(col) for col in columns}
     mappings: Dict[str, str] = {}
     for canonical, aliases in FIELD_ALIASES.items():
@@ -72,6 +137,15 @@ def infer_adapter(columns: List[str], org_id: str) -> DataSourceAdapter:
             if norm in aliases:
                 mappings[canonical] = col
                 break
+
+    still_needed = [f for f in (REQUIRED_CANONICAL_FIELDS | OPTIONAL_CANONICAL_FIELDS) if f not in mappings]
+    leftover_columns = [c for c in columns if c not in mappings.values()]
+    if still_needed:
+        gemma_mappings = _infer_unmapped_fields_with_gemma(still_needed, leftover_columns)
+        if gemma_mappings:
+            logger.info(f"Gemma matched columns for org '{org_id}': {gemma_mappings}")
+        mappings.update(gemma_mappings)
+
     return DataSourceAdapter(org_id=org_id, field_mappings=mappings)
 
 

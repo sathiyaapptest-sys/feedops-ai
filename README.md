@@ -12,7 +12,7 @@ Restaurant aggregators and merchants who want an "Order Online" button on Google
 - **Conversion-tracking upkeep**, dispatching the sandbox/production pings Google requires at least every 7 days to keep the integration from being silently de-indexed.
 - **Feed Health**, a day-by-day view of push history with an "Upload Now" button for immediate recovery and a self-report verification loop — because Google's Partner Portal is the only place that shows whether a feed was actually *accepted*, not just delivered, and there's no API for that.
 - **Ask FeedOps**, a support surface grounded via RAG in the team's own reverse-engineered domain playbook, answering integration questions with cited sources instead of a generic LLM guess.
-- **Self-service merchant profiles**, with per-organization data adapters that remember a returning aggregator's spreadsheet column shape instead of re-guessing it every upload.
+- **Self-service merchant profiles**, with per-organization data adapters that remember a returning aggregator's spreadsheet column shape instead of re-guessing it every upload — an exact-alias match first, then Gemma for whatever column name it's never seen before.
 
 ## Architecture
 
@@ -27,7 +27,7 @@ Restaurant aggregators and merchants who want an "Order Online" button on Google
 - **RAG** (`backend/rag/playbook_index.py`) — chunks the internal domain playbook by section, embeds with Gemini, and holds the vectors in an in-process cache (rebuilt from the Docker-bundled file on process start, no external index to provision). Grounds the SchemaAuditor agent and Ask FeedOps. The raw playbook document itself is intentionally excluded from this repository (see below), but *is* baked into the deployed container — that's what the in-memory index chunks at runtime.
 - **An MCP server** (`backend/tools/mcp_server.py`) — exposes 9 of the same backend tools (Places search, storefront verification, feed compilation, SFTP upload, conversion pings, menu image extraction, restaurant/menu spreadsheet parsing) over the real Model Context Protocol via stdio transport, independent of the FastAPI app, so any MCP-compatible client can drive the same tool surface.
 - **Scheduled jobs** (`backend/jobs/scheduled_tasks.py`) — daily feed push (closed-merchant guard → compile → upload) and weekly conversion sweep, designed as Cloud Run Jobs on Cloud Scheduler crons.
-- **Data adapters** (`backend/tools/data_adapter.py`) — per-organization column-mapping for bulk uploads, saved and reused, with structured per-row validation errors instead of silent guessing.
+- **Data adapters** (`backend/tools/data_adapter.py`) — per-organization column-mapping for bulk uploads, saved and reused, with structured per-row validation errors instead of silent guessing. Exact alias matches first; a column name it's never seen (e.g. "Outlet") falls to Gemma for a best-effort semantic match before the row is ever rejected.
 - **Frontend** — React/Vite, Firebase Auth-gated, wired to the real backend (live SSE onboarding stream, Feed Health, Ask FeedOps, self-service merchant profile).
 
 ## Why the playbook isn't in this repo
@@ -39,6 +39,7 @@ Restaurant aggregators and merchants who want an "Order Online" button on Google
 | Layer | Technology |
 |---|---|
 | LLM | Gemini 3.6 Flash / 3.7 Flash (`google-genai`) |
+| LLM (lightweight) | Gemma 4 (`google-genai`, same client) — bulk-upload column matching |
 | Agent framework | Google ADK (`google-adk`) — 4 agents, real `Runner` execution |
 | Tool protocol | MCP (`mcp[cli]`) — a standalone server alongside the ADK agents |
 | Database | Firestore (raw authenticated REST, no SDK) — merchant records, org config, upload history |
@@ -85,7 +86,7 @@ cp .env.example .env   # fill in GEMINI_API_KEY at minimum
 python run.py           # serves on http://localhost:8000, /docs for the API
 ```
 
-Optional env vars for features that degrade gracefully without them (mock/dry-run fallback, never a crash): `GOOGLE_PLACES_API_KEY`, `GOOGLE_SFTP_USERNAME` / `GOOGLE_SFTP_KEY_PATH`, `GOOGLE_CONVERSION_PARTNER_ID`, `GEMINI_MODEL` (defaults to `gemini-3.6-flash` — the `gemini-flash-latest` alias is unreliable in practice).
+Optional env vars for features that degrade gracefully without them (mock/dry-run fallback, never a crash): `GOOGLE_PLACES_API_KEY`, `GOOGLE_SFTP_USERNAME` / `GOOGLE_SFTP_KEY_PATH`, `GOOGLE_CONVERSION_PARTNER_ID`, `GEMINI_MODEL` (defaults to `gemini-3.6-flash` — the `gemini-flash-latest` alias is unreliable in practice), `GEMMA_MODEL` (defaults to `gemma-4-26b-a4b-it`, used only for bulk-upload column matching — same `GEMINI_API_KEY`, no separate credential).
 
 SchemaAuditor / Ask FeedOps ground themselves in real RAG output automatically — `GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md` is chunked and embedded into an in-memory index the first time a query needs it, no separate build step or Firestore vector index required. You just need the file present locally (see [Why the playbook isn't in this repo](#why-the-playbook-isnt-in-this-repo)) and a working `GEMINI_API_KEY`.
 

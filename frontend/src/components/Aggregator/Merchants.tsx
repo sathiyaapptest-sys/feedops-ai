@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
-import { Layers } from 'lucide-react';
+import { Layers, Trash2 } from 'lucide-react';
 import { BulkUpload } from './BulkUpload';
 import { BulkMenuUpload } from './BulkMenuUpload';
 import { ReadinessScorecard } from './ReadinessScorecard';
@@ -20,6 +20,8 @@ export function Merchants() {
   const [merchants, setMerchants] = useState<any[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
   useEffect(() => {
     api.listMerchants()
@@ -29,6 +31,23 @@ export function Merchants() {
       })
       .catch((err) => setError(err.message || 'Could not load merchants.'));
   }, []);
+
+  const handleRemove = async (storeId: string) => {
+    setRemovingId(storeId);
+    try {
+      const res = await api.removeMerchant(storeId);
+      if (res.status === 'error') throw new Error(res.message);
+      // Soft-removed (status -> excluded_closed) -- /api/merchants only ever
+      // returns matched/approved rows, so it won't come back on a reload
+      // either; drop it locally now for immediate feedback.
+      setMerchants((prev) => (prev || []).filter((m) => m.store_id !== storeId));
+    } catch (err: any) {
+      setError(err.message || 'Could not remove merchant.');
+    } finally {
+      setRemovingId(null);
+      setConfirmId(null);
+    }
+  };
 
   const filtered = (merchants || []).filter((m) =>
     !query || (m.name || '').toLowerCase().includes(query.toLowerCase()) || (m.store_id || '').toLowerCase().includes(query.toLowerCase())
@@ -85,7 +104,8 @@ export function Merchants() {
                   <th className="px-4 py-3">Store ID</th>
                   <th className="px-4 py-3">Address</th>
                   <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3 rounded-tr-lg">Confidence</th>
+                  <th className="px-4 py-3">Confidence</th>
+                  <th className="px-4 py-3 rounded-tr-lg">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -100,6 +120,35 @@ export function Merchants() {
                       </span>
                     </td>
                     <td className="px-4 py-3">{m.confidence != null ? `${(m.confidence * 100).toFixed(0)}%` : '--'}</td>
+                    <td className="px-4 py-3">
+                      {confirmId === m.store_id ? (
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          <span className="text-xs text-slate-500 dark:text-slate-400">Remove?</span>
+                          <button
+                            onClick={() => handleRemove(m.store_id)}
+                            disabled={removingId === m.store_id}
+                            className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50"
+                          >
+                            {removingId === m.store_id ? 'Removing...' : 'Confirm'}
+                          </button>
+                          <button
+                            onClick={() => setConfirmId(null)}
+                            disabled={removingId === m.store_id}
+                            className="text-xs font-medium text-slate-500 hover:underline disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmId(m.store_id)}
+                          className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
+                          title="Remove from active feed"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

@@ -23,10 +23,18 @@ open/close data exists.
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("feedops.feed_compiler")
+
+
+def _slugify(value: str) -> str:
+    """Lowercase, alnum-and-underscore only -- used to build stable-ish IDs
+    (menu section/item ids) from free-text like a menu category name."""
+    slug = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+    return slug or "item"
 
 # Descriptor `name` and data-file prefix are fixed strings per feed type (section 5).
 FEED_DESCRIPTOR_NAMES = {
@@ -42,6 +50,9 @@ FEED_DATA_FILE_PREFIXES = {
 
 # section 3.2: the enum is DELIVERY/TAKEOUT -- not PICKUP.
 VALID_SERVICE_TYPES = {"DELIVERY", "TAKEOUT"}
+
+MENU_FEED_DESCRIPTOR_NAME = "google.food_menu"
+MENU_FEED_FILE_PREFIX = "menu"
 
 
 class ActionsCenterFeedCompiler:
@@ -257,3 +268,126 @@ class ActionsCenterFeedCompiler:
             feeds_generated[f"{feed_type}_descriptor"] = desc_path
 
         return feeds_generated
+
+    @staticmethod
+    def _text_field(text: str) -> Dict[str, Any]:
+        """TextField -> {text: [LocalizedText]} -- the first entry is the
+        preferred representation (Menu Feeds Overview). Single-locale only;
+        no per-org language config exists yet to populate language_code."""
+        return {"text": [{"text": text}]}
+
+    @staticmethod
+    def _menu_item_money(price: Any) -> Optional[Dict[str, Any]]:
+        """
+        Money{currency_code, units, nanos} from a stored plain float price
+        (dollars, e.g. 12.5) -- MenuRepository items have no currency field
+        today, so USD is hardcoded rather than guessed per-org. Returns None
+        (never a fabricated price) for anything that doesn't parse to a real
+        non-negative number, matching this compiler's existing "omit, don't
+        invent" rule for lead_time/hours.
+        """
+        try:
+            amount = float(price)
+        except (TypeError, ValueError):
+            return None
+        if amount < 0:
+            return None
+        units = int(amount)
+        nanos = round((amount - units) * 1_000_000_000)
+        return {"currency_code": "USD", "units": units, "nanos": nanos}
+
+    def compile_menu_feed(self, merchants_with_menus: List[Dict[str, Any]]) -> Dict[str, str]:
+        """
+        Compiles the google.food_menu feed (see Menu Feeds Overview and the
+        food_menu.proto bundle: FoodMenuFeed.data is a flat list of
+        MenuComponent, each independently a Menu, MenuSection, or MenuItem,
+        linked by id references -- Menu.section_ids/item_ids and
+        MenuSection.item_ids -- not nested JSON).
+
+        Only Menu -> MenuSection (grouped by stored `category`) -> MenuItem ->
+        Offer(price) is emitted. MenuItemOption, nutrition, allergens, and
+        dietary restrictions aren't in this app's stored menu data
+        (MenuRepository: name/price/category/description per item) and are
+        simply omitted rather than invented.
+
+        `merchants_with_menus` items are shaped
+        {"entity_id": str, "items": [{"name", "price", "category", "description"}, ...]}
+        -- entity_id must be the SAME id already used in that merchant's
+        Entity feed row (compile_feeds), since a menu can't attach to a
+        merchant Google doesn't already know about (onboarding doc: menu
+        feed "relies on the Merchants or Entity feed").
+        """
+        timestamp = int(time.time())
+        rows: List[Dict[str, Any]] = []
+
+        for merchant in merchants_with_menus:
+            entity_id = merchant.get("entity_id")
+            items = merchant.get("items") or []
+            if not entity_id or not items:
+                continue
+
+            # Preserve first-seen category order rather than an arbitrary dict order.
+            section_order: List[str] = []
+            sections: Dict[str, Dict[str, Any]] = {}
+
+            for i, item in enumerate(items):
+                money = self._menu_item_money(item.get("price"))
+                if money is None:
+                    logger.warning(
+                        f"Skipping menu item '{item.get('name')}' for '{entity_id}': no valid price."
+                    )
+                    continue
+
+                category = (item.get("category") or "Menu").strip() or "Menu"
+                section_id = f"section_{_slugify(category)}_{entity_id}"
+                if section_id not in sections:
+                    sections[section_id] = {
+                        "menu_section_id": section_id,
+                        "display_name": self._text_field(category),
+                        "item_ids": [],
+                    }
+                    section_order.append(section_id)
+
+                item_id = f"item_{i}_{_slugify(item.get('name', ''))}_{entity_id}"
+                menu_item: Dict[str, Any] = {
+                    "menu_item_id": item_id,
+                    "display_name": self._text_field(item.get("name", "")),
+                    "offer_set": {"offers": [{"price": money}]},
+                }
+                if item.get("description"):
+                    menu_item["description"] = self._text_field(item["description"])
+
+                sections[section_id]["item_ids"].append(item_id)
+                rows.append({"item": menu_item})
+
+            populated_sections = [sections[sid] for sid in section_order if sections[sid]["item_ids"]]
+            if not populated_sections:
+                continue  # every item had an invalid price -- no menu to send for this merchant
+
+            for section in populated_sections:
+                rows.append({"section": section})
+
+            rows.append({
+                "menu": {
+                    "menu_id": f"menu_{entity_id}",
+                    "merchant_ids": [entity_id],
+                    "section_ids": [s["menu_section_id"] for s in populated_sections],
+                }
+            })
+
+        if not rows:
+            return {}
+
+        data_path = os.path.join(self.output_dir, f"{MENU_FEED_FILE_PREFIX}_{timestamp}_0001.json")
+        with open(data_path, "w") as f:
+            json.dump({"data": rows}, f)
+
+        desc_path = os.path.join(self.output_dir, f"{MENU_FEED_FILE_PREFIX}_{timestamp}.filesetdesc.json")
+        with open(desc_path, "w") as f:
+            json.dump({
+                "name": MENU_FEED_DESCRIPTOR_NAME,
+                "generation_timestamp": timestamp,
+                "record_count": len(rows),
+            }, f, indent=2)
+
+        return {"menu": data_path, "menu_descriptor": desc_path}

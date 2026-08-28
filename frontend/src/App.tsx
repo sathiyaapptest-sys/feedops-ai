@@ -8,6 +8,8 @@ import { ApiWebhooks } from './components/Aggregator/ApiWebhooks';
 import { FeedsStep } from './components/Aggregator/onboarding/FeedsStep';
 import { ConversionStep } from './components/Aggregator/onboarding/ConversionStep';
 import { ReviewStep } from './components/Aggregator/onboarding/ReviewStep';
+import { MenuDevelopmentStep } from './components/Aggregator/onboarding/MenuDevelopmentStep';
+import { MenuReviewStep } from './components/Aggregator/onboarding/MenuReviewStep';
 import { StepNav } from './components/Aggregator/onboarding/StepNav';
 import { MyStore } from './components/Merchant/MyStore';
 import { Menu } from './components/Merchant/Menu';
@@ -38,6 +40,13 @@ function App() {
           <Route path="onboarding/feeds-production" element={<StepNav stepKey="feeds_production"><FeedsStep environment="production" /></StepNav>} />
           <Route path="onboarding/conversion-production" element={<StepNav stepKey="conversion_production"><ConversionStep environment="production" /></StepNav>} />
           <Route path="onboarding/launch-review" element={<StepNav stepKey="launch_review"><ReviewStep stepKey="launch_review" /></StepNav>} />
+
+          {/* Google Menu Feeds -- separate, opt-in 5-step track. Setup is shared
+              with the Redirect track above (one Partner Portal account). */}
+          <Route path="onboarding/menu-sandbox-development" element={<StepNav track="menu" stepKey="menu_sandbox_development"><MenuDevelopmentStep environment="sandbox" /></StepNav>} />
+          <Route path="onboarding/menu-sandbox-review" element={<StepNav track="menu" stepKey="menu_sandbox_review"><MenuReviewStep stepKey="menu_sandbox_review" /></StepNav>} />
+          <Route path="onboarding/menu-production-development" element={<StepNav track="menu" stepKey="menu_production_development"><MenuDevelopmentStep environment="production" /></StepNav>} />
+          <Route path="onboarding/menu-launch-review" element={<StepNav track="menu" stepKey="menu_launch_review"><MenuReviewStep stepKey="menu_launch_review" /></StepNav>} />
         </Route>
 
         {/* Protected Routes (Merchant) */}

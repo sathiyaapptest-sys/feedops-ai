@@ -23,17 +23,18 @@ from backend.tools.data_adapter import slugify_store_id
 from backend.tools.places_matcher import GooglePlacesClient, resolve_entity_match
 from backend.tools.feed_screenshot_analyzer import FeedScreenshotAnalyzer
 from backend.tools.entity_match_assist import parse_entity_csv, suggest_matches
-from backend.tools.onboarding_journey import compute_journey, compute_conversion_compliance
+from backend.tools.onboarding_journey import compute_journey, compute_conversion_compliance, compute_menu_journey
 from backend.server.auth import get_current_user
 from backend.agent.orchestrator import FeedOpsOrchestrator
 from backend.db.firestore_client import (
     MerchantRepository, STATUS_NEW, STATUS_MATCHED, STATUS_NEEDS_REVIEW,
-    STATUS_NO_LISTING, STATUS_APPROVED, STATUS_REJECTED,
+    STATUS_NO_LISTING, STATUS_APPROVED, STATUS_REJECTED, STATUS_EXCLUDED_CLOSED,
     OrganizationRepository, ORG_TYPE_MERCHANT, ORG_TYPE_AGGREGATOR, PORTAL_STATUS_NOT_STARTED,
     UploadBatchRepository, VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS,
     MenuRepository, ConversionCheckRepository,
 )
 from backend.jobs.scheduled_tasks import run_daily_feed_push, run_weekly_conversion_sweep
+from backend.jobs.menu_feed_push import run_menu_feed_push
 
 app = FastAPI(title="FeedOps AI Backend")
 
@@ -71,6 +72,15 @@ class OrganizationConfigIn(BaseModel):
     portal_status_production: Optional[str] = None
     sandbox_to_prod_review_status: Optional[str] = None
     launch_review_status: Optional[str] = None
+    # Menu Feeds -- a separate, opt-in onboarding track (see
+    # backend/tools/onboarding_journey.py's compute_menu_journey). Defaults
+    # off; every field below is additive and never read by the core 7-step
+    # Ordering Redirect journey.
+    menu_feeds_enabled: Optional[bool] = None
+    generic_sftp_username_sandbox: Optional[str] = None
+    generic_sftp_username_production: Optional[str] = None
+    menu_sandbox_review_status: Optional[str] = None
+    menu_launch_review_status: Optional[str] = None
 
 
 class ServiceOptionsIn(BaseModel):
@@ -303,6 +313,24 @@ async def list_merchants():
     except Exception as e:
         return {"merchants": [], "error": str(e)}
 
+@app.post("/api/merchants/{store_id}/remove")
+async def remove_merchant(store_id: str):
+    """
+    Soft-removes a merchant from the active roster by setting status to
+    excluded_closed -- the same status MerchantRepository.list_active() already
+    treats as excluded from the daily feed push, so this immediately stops the
+    merchant from being fed without a hard Firestore delete. The record (and
+    any upload_batches history referencing this store_id) stays intact.
+    """
+    try:
+        merchant = await asyncio.to_thread(MerchantRepository().get, store_id)
+        if not merchant:
+            return {"status": "error", "message": "Merchant not found."}
+        await asyncio.to_thread(MerchantRepository().update_status, store_id, STATUS_EXCLUDED_CLOSED)
+        return {"status": "ok", "store_id": store_id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/triage/queue")
 async def get_triage_queue():
     """Returns merchants flagged for manual review (< 90% Places match confidence)."""
@@ -365,11 +393,17 @@ class BatchVerifyIn(BaseModel):
 
 @app.get("/api/batches")
 async def list_batches(pending_only: bool = False):
-    """Upload batch history. pending_only=true returns batches still awaiting a
-    human's manual Partner Portal -> Ingestion -> History check."""
+    """Upload batch history for the Ordering Redirect track. pending_only=true
+    returns batches still awaiting a human's manual Partner Portal ->
+    Ingestion -> History check.
+
+    Excludes kind == "menu" batches -- those live in the same collection but
+    belong to the separate Menu Feeds track's own /api/menu-feeds/batches, and
+    must never surface in the Redirect FeedStatus/FeedHealth cards."""
     try:
         repo = UploadBatchRepository()
         batches = await asyncio.to_thread(repo.list_pending_verification if pending_only else repo.list_all)
+        batches = [b for b in batches if b.get("kind", "ordering") != "menu"]
         return {"batches": batches}
     except Exception as e:
         return {"batches": [], "error": str(e)}
@@ -381,8 +415,9 @@ def _read_feed_file(path: str) -> Any:
 @app.get("/api/batches/{batch_id}/feed-content")
 async def get_batch_feed_content(batch_id: str):
     """
-    Reads the actual compiled entity/action/service feed rows for a batch, for
-    the same "preview what would be sent to Google" toggle Services.tsx already
+    Reads the actual compiled entity/action/service (or menu, for a Menu Feed
+    batch) feed rows for a batch, for the same "preview what would be sent to
+    Google" toggle Services.tsx already
     gives merchants. Unlike the merchant-side SchemaAuditor (which returns
     compiled content directly), ActionsCenterFeedCompiler writes each feed to a
     local JSON file and only stores the file PATH on the batch document -- so
@@ -400,7 +435,7 @@ async def get_batch_feed_content(batch_id: str):
         feed_files = batch.get("feed_files") or {}
         feeds: Dict[str, Any] = {}
         missing: List[str] = []
-        for feed_type in ("entity", "action", "service"):
+        for feed_type in ("entity", "action", "service", "menu"):
             path = feed_files.get(feed_type)
             if not path:
                 continue
@@ -583,9 +618,56 @@ async def get_onboarding_journey(current_user: dict = Depends(get_current_user))
         org = await asyncio.to_thread(OrganizationRepository().get, org_id)
         batches = await asyncio.to_thread(UploadBatchRepository().list_all)
         checks = await asyncio.to_thread(ConversionCheckRepository().list_all)
-        return {"status": "ok", **compute_journey(org, batches, checks)}
+        merchants = await asyncio.to_thread(MerchantRepository().list_active)
+        return {"status": "ok", **compute_journey(org, batches, checks, merchant_count=len(merchants))}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+@app.get("/api/onboarding/menu-journey")
+async def get_menu_onboarding_journey(current_user: dict = Depends(get_current_user)):
+    """
+    Assembles the separate, opt-in 5-step Google Menu Feeds onboarding journey
+    (Setup -> Sandbox Development -> Sandbox Review -> Production Development ->
+    Launch Review) for the authenticated org. Always returned (with
+    `enabled: false` when the org hasn't opted in) rather than a 404/empty
+    response, so the caller doesn't need a second round-trip just to decide
+    whether to render anything.
+    """
+    org_id = current_user.get("uid")
+    if not org_id:
+        return {"status": "error", "message": "No authenticated user."}
+    try:
+        org = await asyncio.to_thread(OrganizationRepository().get, org_id)
+        batches = await asyncio.to_thread(UploadBatchRepository().list_all)
+        merchants = await asyncio.to_thread(MerchantRepository().list_active)
+        return {"status": "ok", **compute_menu_journey(org, batches, merchant_count=len(merchants))}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/menu-feeds/trigger-pipeline")
+async def trigger_menu_feed_pipeline(environment: str = "sandbox"):
+    """Runs the real menu feed push (compile google.food_menu, Generic SFTP upload) on demand."""
+    if environment not in ("sandbox", "production"):
+        return {"ok": False, "error": f"environment must be 'sandbox' or 'production', got '{environment}'."}
+    summary = await asyncio.to_thread(run_menu_feed_push, environment)
+    return summary
+
+@app.get("/api/menu-feeds/batches")
+async def list_menu_feed_batches(environment: Optional[str] = None):
+    """
+    Upload batch history filtered to kind == "menu" -- deliberately a separate
+    endpoint from GET /api/batches (which the Ordering Redirect FeedStatus/
+    FeedHealth components read) so a menu batch can never leak into their
+    counts, and vice versa.
+    """
+    try:
+        batches = await asyncio.to_thread(UploadBatchRepository().list_all)
+        menu_batches = [b for b in batches if b.get("kind") == "menu"]
+        if environment:
+            menu_batches = [b for b in menu_batches if b.get("environment") == environment]
+        return {"batches": menu_batches}
+    except Exception as e:
+        return {"batches": [], "error": str(e)}
 
 @app.post("/api/support/ask")
 async def ask_support(request: Request):
@@ -711,7 +793,11 @@ async def _persist_bulk_merchant(merchant: Dict[str, Any], org_id: str) -> Dict[
     return {"store_id": store_id, "name": merchant["name"], "status": status}
 
 @app.post("/api/upload/spreadsheet")
-async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str] = Form(None)):
+async def upload_spreadsheet(
+    file: UploadFile = File(...),
+    org_id: Optional[str] = Form(None),
+    replace_existing: bool = Form(False),
+):
     """
     Accepts multipart/form-data Excel/CSV of restaurant/merchant rows, validates
     it, and persists every valid row the same way single-merchant onboarding
@@ -730,6 +816,14 @@ async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str]
     from a previous upload) or infers and saves one, and rows that fail required-field
     validation come back in `errors` instead of being silently dropped or guessed at
     (and are never persisted).
+
+    replace_existing=true turns this into a full roster refresh: any of this
+    org's merchants NOT present in this file get soft-removed (see
+    remove_merchant) rather than a normal upload's merge-only upsert. Guarded
+    to only fire when at least one row from this file actually persisted --
+    an empty or fully-invalid file must never wipe an existing roster. Merchants
+    are a Firestore collection shared across orgs, so this only ever touches
+    rows whose stored org_id matches this upload's -- never another org's data.
     """
     try:
         fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
@@ -755,11 +849,29 @@ async def upload_spreadsheet(file: UploadFile = File(...), org_id: Optional[str]
                 else:
                     persisted.append(result)
 
+        removed_count = 0
+        if persisted and replace_existing:
+            effective_org_id = org_id or "unknown"
+            kept_store_ids = {p["store_id"] for p in persisted}
+            existing = await asyncio.to_thread(MerchantRepository().list_all)
+            stale = [
+                m for m in existing
+                if m.get("org_id") == effective_org_id
+                and m.get("store_id") not in kept_store_ids
+                and m.get("status") != STATUS_EXCLUDED_CLOSED
+            ]
+            await asyncio.gather(
+                *[asyncio.to_thread(MerchantRepository().update_status, m["store_id"], STATUS_EXCLUDED_CLOSED) for m in stale],
+                return_exceptions=True,
+            )
+            removed_count = len(stale)
+
         return {
             "status": "success",
             "merchants_count": len(merchants),
             "persisted_count": len(persisted),
             "persisted": persisted,
+            "removed_count": removed_count,
             "errors": data["errors"],
             "adapter": data["adapter"],
             "data": {"merchants": merchants},

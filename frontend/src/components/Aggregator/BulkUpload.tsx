@@ -5,14 +5,15 @@ import { UploadCloud, Loader2 } from 'lucide-react';
 export function BulkUpload() {
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [replaceExisting, setReplaceExisting] = useState(false);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
-    
+
     setUploading(true);
     setResult(null);
     try {
-      const data = await api.uploadSpreadsheet(e.target.files[0]);
+      const data = await api.uploadSpreadsheet(e.target.files[0], replaceExisting);
       setResult(data);
     } catch (err) {
       console.error(err);
@@ -50,6 +51,21 @@ export function BulkUpload() {
         </label>
       </div>
 
+      <label className="flex items-start gap-2 mt-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={replaceExisting}
+          onChange={(e) => setReplaceExisting(e.target.checked)}
+          disabled={uploading}
+          className="mt-0.5"
+        />
+        <span className="text-xs text-slate-500 dark:text-slate-400">
+          <span className="font-medium text-slate-700 dark:text-slate-300">Replace existing roster</span> -- any
+          merchant not in this file gets removed from the active feed (not hard-deleted; you can still see its
+          history). Leave unchecked to just add/update these rows.
+        </span>
+      </label>
+
       {result && result.status === 'error' && (
         <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 rounded-lg text-sm">
           {result.message || 'Upload failed.'}
@@ -61,6 +77,9 @@ export function BulkUpload() {
           <div className="p-4 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 rounded-lg text-sm">
             Parsed {result.merchants_count} merchant{result.merchants_count === 1 ? '' : 's'} --
             {' '}{result.persisted_count ?? 0} saved to the triage queue / readiness scorecard / daily feed push.
+            {!!result.removed_count && (
+              <> {result.removed_count} merchant{result.removed_count === 1 ? '' : 's'} not in this file {result.removed_count === 1 ? 'was' : 'were'} removed from the active feed.</>
+            )}
           </div>
 
           {result.errors && result.errors.length > 0 && (

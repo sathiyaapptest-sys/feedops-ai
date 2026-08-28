@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { auth } from '../../lib/firebase';
-import { Settings, Loader2, CheckCircle2 } from 'lucide-react';
+import { Settings, Loader2, CheckCircle2, UtensilsCrossed } from 'lucide-react';
 
 interface ConfigForm {
   sftp_username_sandbox: string;
@@ -9,6 +9,12 @@ interface ConfigForm {
   conversion_partner_id: string;
   portal_status_sandbox: string;
   portal_status_production: string;
+  // Menu Feeds -- a separate, opt-in track (see onboarding/steps.ts's
+  // MENU_STEP_* tables and compute_menu_journey on the backend). Additive
+  // only: nothing above this comment changed.
+  menu_feeds_enabled: boolean;
+  generic_sftp_username_sandbox: string;
+  generic_sftp_username_production: string;
 }
 
 const EMPTY_FORM: ConfigForm = {
@@ -17,6 +23,9 @@ const EMPTY_FORM: ConfigForm = {
   conversion_partner_id: '',
   portal_status_sandbox: 'not_started',
   portal_status_production: 'not_started',
+  menu_feeds_enabled: false,
+  generic_sftp_username_sandbox: '',
+  generic_sftp_username_production: '',
 };
 
 const PORTAL_STATUS_OPTIONS = ['not_started', 'in_progress', 'live'];
@@ -76,6 +85,9 @@ export function ApiWebhooks() {
           conversion_partner_id: config.conversion_partner_id || '',
           portal_status_sandbox: config.portal_status_sandbox || res.org?.portal_status?.sandbox || 'not_started',
           portal_status_production: config.portal_status_production || res.org?.portal_status?.production || 'not_started',
+          menu_feeds_enabled: !!config.menu_feeds_enabled,
+          generic_sftp_username_sandbox: config.generic_sftp_username_sandbox || '',
+          generic_sftp_username_production: config.generic_sftp_username_production || '',
         });
       } catch (err: any) {
         setError(err.message || 'Could not load organization config.');
@@ -179,6 +191,51 @@ export function ApiWebhooks() {
                   {PORTAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
                 </select>
               </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.menu_feeds_enabled}
+                  onChange={(e) => setForm({ ...form, menu_feeds_enabled: e.target.checked })}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="text-sm font-medium text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <UtensilsCrossed className="w-4 h-4 text-blue-500" />
+                    Also enable Menu Feeds
+                  </span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400 block mt-0.5">
+                    A separate, optional onboarding track (google.food_menu) for restaurants that want their menu
+                    to show on Google Search/Maps -- not every aggregator needs this. Adds its own tracker card to
+                    the Dashboard once enabled.
+                  </span>
+                </span>
+              </label>
+
+              {form.menu_feeds_enabled && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pl-7">
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium text-slate-900 dark:text-white">Generic SFTP Username (sandbox)</label>
+                    <input
+                      value={form.generic_sftp_username_sandbox}
+                      onChange={(e) => setForm({ ...form, generic_sftp_username_sandbox: e.target.value })}
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white"
+                      placeholder="generic-sandbox-username"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium text-slate-900 dark:text-white">Generic SFTP Username (production)</label>
+                    <input
+                      value={form.generic_sftp_username_production}
+                      onChange={(e) => setForm({ ...form, generic_sftp_username_production: e.target.value })}
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white"
+                      placeholder="generic-production-username"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end">
