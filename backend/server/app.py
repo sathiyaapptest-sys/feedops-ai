@@ -950,6 +950,24 @@ async def upload_menu_spreadsheet(file: UploadFile = File(...), org_id: Optional
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.post("/api/menus/clear-all")
+async def clear_all_menus():
+    """Purges all uploaded menu documents from Firestore."""
+    try:
+        count = await asyncio.to_thread(MenuRepository().clear_all)
+        return {"status": "success", "cleared_count": count, "message": f"Cleared {count} menu documents."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/merchants/clear-all")
+async def clear_all_merchants():
+    """Purges all merchant records from Firestore."""
+    try:
+        count = await asyncio.to_thread(MerchantRepository().clear_all)
+        return {"status": "success", "cleared_count": count, "message": f"Cleared {count} merchant records."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 class SPAStaticFiles(StaticFiles):
     """StaticFiles(html=True) only auto-serves index.html for the root path,
     not for arbitrary react-router-dom client-side routes (e.g. /login,

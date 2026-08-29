@@ -207,6 +207,14 @@ export const api = {
     });
     return res.json();
   },
+  clearAllMenus: async (): Promise<{ status: string; cleared_count?: number; message?: string }> => {
+    const res = await fetch(`${API_BASE_URL}/api/menus/clear-all`, { method: 'POST' });
+    return res.json();
+  },
+  clearAllMerchants: async (): Promise<{ status: string; cleared_count?: number; message?: string }> => {
+    const res = await fetch(`${API_BASE_URL}/api/merchants/clear-all`, { method: 'POST' });
+    return res.json();
+  },
   triggerPipeline: async (environment: 'sandbox' | 'production' = 'sandbox') => {
     const res = await fetch(`${API_BASE_URL}/api/feeds/trigger-pipeline?environment=${environment}`, {
       method: 'POST',

@@ -86,7 +86,7 @@ export function Merchants() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <BulkUpload onUploaded={() => setRefreshToken((t) => t + 1)} />
-        <BulkMenuUpload />
+        <BulkMenuUpload onCleared={() => setRefreshToken((t) => t + 1)} />
       </div>
 
       <div className="p-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700">

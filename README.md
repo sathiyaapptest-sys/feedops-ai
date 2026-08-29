@@ -20,7 +20,7 @@ Restaurant aggregators and merchants who want an "Order Online" button on Google
 
 ## Architecture
 
-*(Diagram in progress — see [Known gaps](#known-gaps-and-honest-limitations))*
+![FeedOps AI Architecture Diagram](docs/feedops-architecture-v2.svg)
 
 - **4 Google ADK agents** (`backend/agent/orchestrator.py`), each running through a real `google.adk.runners.Runner` against Gemini, with a deterministic Python fallback if the agent call fails:
   - **EntityMatcher** — judges Google Places match confidence, grounds ambiguous cases via Google Search.

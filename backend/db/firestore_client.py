@@ -162,6 +162,32 @@ class _FirestoreRest:
         )
         resp.raise_for_status()
 
+    def delete(self, collection: str, doc_id: str) -> None:
+        resp = self._session.delete(f"{self._base}/{collection}/{doc_id}")
+        if resp.status_code != 404:
+            resp.raise_for_status()
+
+    def list_all_doc_ids(self, collection: str) -> List[str]:
+        results: List[str] = []
+        page_token: Optional[str] = None
+        while True:
+            params = {"pageSize": 300}
+            if page_token:
+                params["pageToken"] = page_token
+            resp = self._session.get(f"{self._base}/{collection}", params=params)
+            if resp.status_code == 404:
+                break
+            resp.raise_for_status()
+            body = resp.json()
+            for doc in body.get("documents", []):
+                name = doc.get("name", "")
+                if "/" in name:
+                    results.append(name.split("/")[-1])
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                break
+        return results
+
     def list_all(self, collection: str) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         page_token: Optional[str] = None
@@ -245,6 +271,13 @@ class MerchantRepository:
         if extra:
             payload.update(extra)
         self.client.set(MERCHANTS_COLLECTION, store_id, payload, merge=True)
+
+    def clear_all(self) -> int:
+        """Purges all merchant records from Firestore."""
+        doc_ids = self.client.list_all_doc_ids(MERCHANTS_COLLECTION)
+        for doc_id in doc_ids:
+            self.client.delete(MERCHANTS_COLLECTION, doc_id)
+        return len(doc_ids)
 
     def readiness_summary(self) -> Dict[str, Any]:
         """Counts backing the launch-readiness scorecard, computed from real documents."""
@@ -370,6 +403,13 @@ class MenuRepository:
         }
         self.client.set(MENUS_COLLECTION, store_id, payload, merge=True)
         return {"added": len(added), "skipped_duplicates": skipped, "total": len(current_items) + len(added)}
+
+    def clear_all(self) -> int:
+        """Purges all menu documents from Firestore."""
+        doc_ids = self.client.list_all_doc_ids(MENUS_COLLECTION)
+        for doc_id in doc_ids:
+            self.client.delete(MENUS_COLLECTION, doc_id)
+        return len(doc_ids)
 
 
 class UploadBatchRepository:
