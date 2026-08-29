@@ -382,8 +382,9 @@ class UploadBatchRepository:
     Also the home of the human verification loop: Google exposes no API to
     confirm a feed was actually *accepted* (only that it was *delivered*, via
     the SFTP put succeeding) -- that's a manual Partner Portal -> Ingestion ->
-    History check. This repository never calls Google; mark_verified() only
-    records what a human reports after doing that check themselves.
+    History check, per file type (entity/action/service). This repository
+    never calls Google; mark_feed_status() only records what a human reports
+    after doing that check themselves.
     """
 
     def __init__(self, client: Optional[_FirestoreRest] = None):
@@ -407,10 +408,6 @@ class UploadBatchRepository:
         batch = {
             **batch,
             "feed_types": feed_types,
-            "verification_status": VERIFICATION_PENDING,
-            "verified_by": None,
-            "verified_at": None,
-            "verification_notes": None,
             **feed_status_fields,
         }
         payload = {**batch, "created_at": SERVER_TIMESTAMP}
@@ -422,19 +419,6 @@ class UploadBatchRepository:
 
     def list_all(self) -> List[Dict[str, Any]]:
         return self.client.list_all(UPLOAD_BATCHES_COLLECTION)
-
-    def list_pending_verification(self) -> List[Dict[str, Any]]:
-        return self.client.query_equals(UPLOAD_BATCHES_COLLECTION, "verification_status", VERIFICATION_PENDING)
-
-    def mark_verified(self, batch_id: str, status: str, verified_by: str, notes: Optional[str] = None) -> None:
-        """Records a human's self-reported outcome of manually checking Partner
-        Portal -> Ingestion -> History. Never calls Google -- there's no API to."""
-        self.client.set(UPLOAD_BATCHES_COLLECTION, batch_id, {
-            "verification_status": status,
-            "verified_by": verified_by,
-            "verified_at": SERVER_TIMESTAMP,
-            "verification_notes": notes,
-        }, merge=True)
 
     def mark_feed_status(self, batch_id: str, feed_type: str, status: str, verified_by: str) -> None:
         """

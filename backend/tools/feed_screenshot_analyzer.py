@@ -3,8 +3,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
-
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+from backend.tools.model_cascade import generate_content_with_cascade
 
 
 class FeedRowSuggestion(BaseModel):
@@ -89,8 +88,8 @@ class FeedScreenshotAnalyzer:
         aggregate or unrelated screen.
         """
 
-        response = self.client.models.generate_content(
-            model=GEMINI_MODEL,
+        text, _ = generate_content_with_cascade(
+            client=self.client,
             contents=[
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
                 prompt,
@@ -99,5 +98,6 @@ class FeedScreenshotAnalyzer:
                 response_mime_type="application/json",
                 response_schema=FeedScreenshotAnalysis,
             ),
+            vision_only=True,
         )
-        return response.parsed
+        return FeedScreenshotAnalysis.model_validate_json(text)

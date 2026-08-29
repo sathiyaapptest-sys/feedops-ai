@@ -75,6 +75,12 @@ export const api = {
     });
     return res.json();
   },
+  /** Full read-only detail (profile + menu) for one merchant, for the
+   * Merchants page's click-through detail modal. */
+  getMerchantDetail: async (storeId: string): Promise<{ status: string; merchant?: any; menu?: any; message?: string }> => {
+    const res = await fetch(`${API_BASE_URL}/api/merchants/${encodeURIComponent(storeId)}`);
+    return res.json();
+  },
   /** Reads one organization's record (config, portal status). Auth-protected. */
   getOrganization: async (orgId: string): Promise<{ status: string; org?: any; message?: string }> => {
     const token = await getIdToken();
@@ -190,11 +196,14 @@ export const api = {
     const res = await fetch(`${API_BASE_URL}/api/menu-feeds/batches${qs}`);
     return res.json();
   },
-  resolveTriage: async (id: string, action: string) => {
+  /** address is optional -- pass it on an approve to overwrite a wrong
+   * automatic match with the address the reviewer confirmed themselves
+   * (via a free Google Maps text search, no Places API involved). */
+  resolveTriage: async (id: string, action: string, address?: string) => {
     const res = await fetch(`${API_BASE_URL}/api/triage/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, action }),
+      body: JSON.stringify({ id, action, address }),
     });
     return res.json();
   },
@@ -209,24 +218,6 @@ export const api = {
    * API for it (there isn't one). */
   getBatches: async (): Promise<{ batches: any[] }> => {
     const res = await fetch(`${API_BASE_URL}/api/batches`);
-    return res.json();
-  },
-  /** Records a human's self-reported result of manually checking Partner
-   * Portal -> Ingestion -> History for one batch. Auth-protected. */
-  verifyBatch: async (
-    batchId: string,
-    status: 'confirmed_clean' | 'flagged_errors',
-    notes?: string
-  ): Promise<{ status: string; batch_id?: string; verification_status?: string; message?: string }> => {
-    const token = await getIdToken();
-    const res = await fetch(`${API_BASE_URL}/api/batches/${encodeURIComponent(batchId)}/verify`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ status, notes }),
-    });
     return res.json();
   },
   /** Records a human's self-reported acceptance status for ONE feed type
@@ -438,6 +429,7 @@ export const api = {
     address: string;
     phone?: string;
     email?: string;
+    actionUrl?: string;
     placeId?: string;
     serviceOptions?: { delivery: boolean; takeaway: boolean; inStore: boolean };
     timings?: Array<{ day: string; isOpen: boolean; openTime: string; closeTime: string }>;

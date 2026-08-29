@@ -14,18 +14,33 @@ interface Batch {
   merchant_count: number;
   upload_status: string;
   dry_run: boolean;
-  verification_status: 'pending' | 'confirmed_clean' | 'flagged_errors';
-  verification_notes?: string | null;
+  feed_types?: string[];
   created_at?: string;
+  [key: string]: any; // feed_status_{type} fields, dynamic per feed type
 }
 
 type Health = 'clean' | 'pending' | 'attention';
 
+// Derived purely from Menu Feed Status's own feed_status_menu mark -- see
+// FeedHealth.tsx's identical comment: there used to be a second, separate
+// "Mark Clean/Flag Errors" action here writing its own unread
+// verification_status field. This card is now a read-only summary of the
+// one real mechanism (feed_status_menu), not a second one.
 function batchHealth(batch: Batch): Health {
-  if (batch.upload_status !== 'success' || batch.verification_status === 'flagged_errors') return 'attention';
-  if (batch.verification_status === 'pending') return 'pending';
-  return 'clean';
+  if (batch.upload_status !== 'success') return 'attention';
+  const feedTypes = batch.feed_types && batch.feed_types.length > 0 ? batch.feed_types : [];
+  if (feedTypes.length === 0) return 'pending';
+  const statuses = feedTypes.map((ft) => batch[`feed_status_${ft}`]);
+  if (statuses.some((s) => s === 'flagged_errors')) return 'attention';
+  if (statuses.every((s) => s === 'confirmed_clean')) return 'clean';
+  return 'pending';
 }
+
+const HEALTH_LABEL: Record<Health, string> = {
+  clean: 'accepted',
+  pending: 'awaiting review',
+  attention: 'needs attention',
+};
 
 const DOT_CLASS: Record<Health, string> = {
   clean: 'bg-green-500',
@@ -49,8 +64,6 @@ export function MenuFeedHealth({ environment }: MenuFeedHealthProps) {
   const [error, setError] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
   const [triggerResult, setTriggerResult] = useState<string | null>(null);
-  const [verifyingId, setVerifyingId] = useState<string | null>(null);
-  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [productionUnlocked, setProductionUnlocked] = useState<boolean | null>(null); // null = loading
 
   useEffect(() => {
@@ -106,18 +119,6 @@ export function MenuFeedHealth({ environment }: MenuFeedHealthProps) {
     }
   };
 
-  const handleVerify = async (batchId: string, status: 'confirmed_clean' | 'flagged_errors') => {
-    setVerifyingId(batchId);
-    try {
-      await api.verifyBatch(batchId, status, noteDrafts[batchId] || undefined);
-      await load();
-    } catch (err: any) {
-      setError(`Could not record verification: ${err.message}`);
-    } finally {
-      setVerifyingId(null);
-    }
-  };
-
   const latest = batches && batches.length > 0 ? batches[0] : null;
   const hoursSinceLatest = latest?.created_at
     ? (Date.now() - new Date(latest.created_at).getTime()) / (1000 * 60 * 60)
@@ -156,7 +157,7 @@ export function MenuFeedHealth({ environment }: MenuFeedHealthProps) {
             ? 'No menu feed push on record yet -- run one with "Upload Now".'
             : dayGap
             ? `No push recorded in over 36 hours (last one: ${formatWhen(latest.created_at)}).`
-            : 'The most recent push needs attention -- see the batch below.'}
+            : 'The most recent push needs attention -- see Menu Feed Status above to mark it Accepted/Rejected.'}
         </div>
       )}
 
@@ -197,50 +198,19 @@ export function MenuFeedHealth({ environment }: MenuFeedHealthProps) {
               return (
                 <div
                   key={b.batch_id}
-                  className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700 text-sm"
+                  className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700 text-sm"
                 >
-                  <div className="flex items-center gap-3 min-w-0">
-                    {health === 'clean' && <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />}
-                    {health === 'pending' && <Clock className="w-4 h-4 text-amber-400 flex-shrink-0" />}
-                    {health === 'attention' && <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />}
-                    <div className="min-w-0">
-                      <p className="font-medium text-slate-900 dark:text-white truncate">
-                        {b.batch_id} <span className="text-slate-400 font-normal">({b.environment}{b.dry_run ? ', dry-run' : ''})</span>
-                      </p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                        {formatWhen(b.created_at)} -- {b.merchant_count} restaurant(s) -- {b.verification_status.replace('_', ' ')}
-                      </p>
-                      {b.verification_notes && (
-                        <p className="text-xs text-slate-400 italic mt-0.5">"{b.verification_notes}"</p>
-                      )}
-                    </div>
+                  {health === 'clean' && <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />}
+                  {health === 'pending' && <Clock className="w-4 h-4 text-amber-400 flex-shrink-0" />}
+                  {health === 'attention' && <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />}
+                  <div className="min-w-0">
+                    <p className="font-medium text-slate-900 dark:text-white truncate">
+                      {b.batch_id} <span className="text-slate-400 font-normal">({b.environment}{b.dry_run ? ', dry-run' : ''})</span>
+                    </p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {formatWhen(b.created_at)} -- {b.merchant_count} restaurant(s) -- {HEALTH_LABEL[health]}
+                    </p>
                   </div>
-
-                  {b.verification_status === 'pending' && (
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <input
-                        type="text"
-                        placeholder="notes (optional)"
-                        value={noteDrafts[b.batch_id] || ''}
-                        onChange={(e) => setNoteDrafts({ ...noteDrafts, [b.batch_id]: e.target.value })}
-                        className="hidden lg:block w-32 px-2 py-1 text-xs border border-slate-300 dark:border-slate-600 rounded bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-white"
-                      />
-                      <button
-                        onClick={() => handleVerify(b.batch_id, 'confirmed_clean')}
-                        disabled={verifyingId === b.batch_id}
-                        className="px-2 py-1 text-xs bg-green-100 hover:bg-green-200 text-green-700 dark:bg-green-900/30 dark:text-green-300 rounded disabled:opacity-50"
-                      >
-                        Mark Clean
-                      </button>
-                      <button
-                        onClick={() => handleVerify(b.batch_id, 'flagged_errors')}
-                        disabled={verifyingId === b.batch_id}
-                        className="px-2 py-1 text-xs bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-900/30 dark:text-red-300 rounded disabled:opacity-50"
-                      >
-                        Flag Errors
-                      </button>
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -249,8 +219,9 @@ export function MenuFeedHealth({ environment }: MenuFeedHealthProps) {
       )}
 
       <p className="mt-3 text-xs text-slate-400">
-        Verification is self-reported: Google exposes no API to confirm a menu feed was accepted, only
-        Partner Portal &rarr; Ingestion &rarr; History. Check there, then mark the batch above.
+        Read-only: this summarizes the mark from Menu Feed Status above (feed_status_menu, the same data that
+        builds your streak) -- Menu Feed Status is the one place you actually mark it Accepted or Rejected
+        after checking Partner Portal &rarr; Ingestion &rarr; History.
       </p>
     </div>
   );

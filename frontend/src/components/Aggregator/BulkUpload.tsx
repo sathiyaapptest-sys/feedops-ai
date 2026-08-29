@@ -2,7 +2,15 @@ import { useState } from 'react';
 import { api } from '../../lib/api';
 import { UploadCloud, Loader2 } from 'lucide-react';
 
-export function BulkUpload() {
+interface BulkUploadProps {
+  // Called after any completed upload (success or partial) so sibling
+  // components that own their own data -- the Triage Queue, the validated
+  // Merchants table, the Readiness Scorecard -- know to refetch. None of them
+  // are notified otherwise; each only ever fetched once on its own mount.
+  onUploaded?: () => void;
+}
+
+export function BulkUpload({ onUploaded }: BulkUploadProps) {
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [replaceExisting, setReplaceExisting] = useState(false);
@@ -15,6 +23,7 @@ export function BulkUpload() {
     try {
       const data = await api.uploadSpreadsheet(e.target.files[0], replaceExisting);
       setResult(data);
+      if (data.status !== 'error') onUploaded?.();
     } catch (err) {
       console.error(err);
     } finally {
@@ -72,11 +81,21 @@ export function BulkUpload() {
         </div>
       )}
 
-      {result && result.status !== 'error' && (
+      {result && result.status !== 'error' && (() => {
+        // Break the flat persisted_count down by where each row actually
+        // landed -- matched/approved go straight into the Merchants table
+        // below, needs_review/no_listing go into the Triage Queue above.
+        // Without this, "20 saved" reads as one list when it's really split
+        // across two, and it's not obvious which merchant went where.
+        const persisted: any[] = result.persisted || [];
+        const readyCount = persisted.filter((p) => p.status === 'matched' || p.status === 'approved').length;
+        const reviewCount = persisted.length - readyCount;
+        return (
         <div className="mt-4 space-y-3">
           <div className="p-4 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 rounded-lg text-sm">
-            Parsed {result.merchants_count} merchant{result.merchants_count === 1 ? '' : 's'} --
-            {' '}{result.persisted_count ?? 0} saved to the triage queue / readiness scorecard / daily feed push.
+            Parsed {result.merchants_count} merchant{result.merchants_count === 1 ? '' : 's'}.
+            {!!readyCount && <> {readyCount} matched automatically -- now in the Merchants table below.</>}
+            {!!reviewCount && <> {reviewCount} need{reviewCount === 1 ? 's' : ''} a manual match decision -- now in the Global Triage Queue above.</>}
             {!!result.removed_count && (
               <> {result.removed_count} merchant{result.removed_count === 1 ? '' : 's'} not in this file {result.removed_count === 1 ? 'was' : 'were'} removed from the active feed.</>
             )}
@@ -95,7 +114,8 @@ export function BulkUpload() {
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

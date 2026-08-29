@@ -25,6 +25,9 @@ import os
 import re
 import logging
 from typing import Dict, List, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from google import genai
 from google.genai import types as genai_types

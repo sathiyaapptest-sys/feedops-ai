@@ -2,12 +2,19 @@ import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { Activity } from 'lucide-react';
 
-export function ReadinessScorecard() {
+interface ReadinessScorecardProps {
+  // Bumped by a sibling action (e.g. a bulk restaurant upload) that changed
+  // merchant data this component doesn't own -- refetches when it changes.
+  refreshToken?: number;
+}
+
+export function ReadinessScorecard({ refreshToken }: ReadinessScorecardProps) {
   const [data, setData] = useState<any>(null);
 
   useEffect(() => {
     api.getReadiness().then(setData).catch(console.error);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshToken]);
 
   if (!data) return <div className="p-4 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 animate-pulse h-32"></div>;
 

@@ -103,6 +103,7 @@ class MerchantProfileIn(BaseModel):
     address: str
     phone: Optional[str] = None
     email: Optional[str] = None
+    actionUrl: Optional[str] = None
     placeId: Optional[str] = None
     serviceOptions: ServiceOptionsIn = ServiceOptionsIn()
     timings: List[TimingIn] = []
@@ -111,12 +112,14 @@ class MerchantProfileIn(BaseModel):
 
 def _service_types_from_options(options: Dict[str, Any]) -> List[str]:
     """Maps MyStore.tsx's service-option checkboxes to Actions Center's
-    DELIVERY/TAKEOUT enum (section 3.2) -- inStore has no feed equivalent."""
+    DELIVERY/TAKEOUT/DINE_IN enum (section 3.2)."""
     types = []
     if options.get("delivery"):
         types.append("DELIVERY")
     if options.get("takeaway"):
         types.append("TAKEOUT")
+    if options.get("inStore") or options.get("dineIn"):
+        types.append("DINE_IN")
     return types
 
 
@@ -233,16 +236,18 @@ async def save_merchant_profile(payload: MerchantProfileIn, current_user: dict =
             "store_id": store_id,
             "name": payload.storeName,
             "address": payload.address,
-            "telephone": payload.phone,
+            "telephone": payload.phone or "",
             "email": payload.email or email,
+            "action_link": payload.actionUrl,
+            "action_url": payload.actionUrl,
             "service_types": _service_types_from_options(payload.serviceOptions.model_dump()),
             "opening_hours": [t.model_dump() for t in payload.timings],
             "lead_time_minutes": payload.leadTimeMinutes,
-            "place_id": payload.placeId,
+            "place_id": payload.placeId if payload.placeId is not None else "",
         }
         if not existing:
             record["status"] = STATUS_NEW
-        await asyncio.to_thread(repo.upsert, {k: v for k, v in record.items() if v is not None})
+        await asyncio.to_thread(repo.upsert, {k: (v if v is not None else "") for k, v in record.items()})
         return {"status": "success", "store_id": store_id}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -313,6 +318,29 @@ async def list_merchants():
     except Exception as e:
         return {"merchants": [], "error": str(e)}
 
+@app.get("/api/merchants/{store_id}")
+async def get_merchant_detail(store_id: str):
+    """
+    Full read-only detail for one merchant, for the Merchants page's
+    click-through -- the same `merchants` doc self-service MyStore.tsx and
+    bulk upload both write to, plus its menu (the same `menus/{store_id}` doc
+    Menu.tsx reads/writes). A bulk-uploaded merchant won't have
+    service_types/opening_hours/lead_time_minutes set -- only self-service
+    MyStore collects those -- so this returns whatever's actually on the
+    record (missing fields stay missing) rather than guessing at a value.
+
+    Declared after /api/merchants/profile and /api/merchants/audit above so
+    this catch-all {store_id} route can never shadow those literal paths.
+    """
+    try:
+        merchant = await asyncio.to_thread(MerchantRepository().get, store_id)
+        if not merchant:
+            return {"status": "error", "message": "Merchant not found."}
+        menu = await asyncio.to_thread(MenuRepository().get, store_id)
+        return {"status": "ok", "merchant": merchant, "menu": menu}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.post("/api/merchants/{store_id}/remove")
 async def remove_merchant(store_id: str):
     """
@@ -333,22 +361,42 @@ async def remove_merchant(store_id: str):
 
 @app.get("/api/triage/queue")
 async def get_triage_queue():
-    """Returns merchants flagged for manual review (< 90% Places match confidence)."""
+    """
+    Returns merchants flagged for manual review (< 90% Places match confidence),
+    each annotated with a real `issue` string (previously always missing --
+    TriageQueue.tsx rendered `item.issue` but nothing ever set that field) so
+    the reviewer sees why a row needs a decision instead of a blank column.
+    """
     try:
         queue = await asyncio.to_thread(MerchantRepository().list_by_status, STATUS_NEEDS_REVIEW)
+        for item in queue:
+            if not item.get("place_id"):
+                item["issue"] = "No Google Places listing found for this name/address."
+            else:
+                confidence = item.get("confidence") or 0.0
+                item["issue"] = f"Low-confidence match ({round(confidence * 100)}%) -- confirm before approving."
         return {"queue": queue}
     except Exception as e:
         return {"queue": [], "error": str(e)}
 
 @app.post("/api/triage/resolve")
 async def resolve_triage(request: Request):
-    """Accepts manual approval or rejection for an entity match."""
+    """
+    Accepts manual approval or rejection for an entity match. An approve may
+    optionally carry a corrected `address` the reviewer typed after visually
+    checking Google Maps' free text-search page (no Places API call, no key,
+    no cost) -- when present, it overwrites the merchant's stored address and
+    sets confidence to 1.0 (a human just confirmed it, so the old
+    low-confidence automatic score no longer reflects reality).
+    """
     data = await request.json()
     merchant_id = data.get("id")
     action = data.get("action")
+    corrected_address = data.get("address")
     status = STATUS_APPROVED if action == "approve" else STATUS_REJECTED
     try:
-        await asyncio.to_thread(MerchantRepository().update_status, merchant_id, status)
+        extra = {"address": corrected_address, "confidence": 1.0} if (action == "approve" and corrected_address) else None
+        await asyncio.to_thread(MerchantRepository().update_status, merchant_id, status, extra)
         return {"status": "resolved", "id": merchant_id, "action": action}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -387,22 +435,15 @@ async def trigger_pipeline(environment: str = "sandbox"):
     summary = await asyncio.to_thread(run_daily_feed_push, environment, allow_fixture_fallback=False)
     return summary
 
-class BatchVerifyIn(BaseModel):
-    status: str  # "confirmed_clean" | "flagged_errors"
-    notes: Optional[str] = None
-
 @app.get("/api/batches")
-async def list_batches(pending_only: bool = False):
-    """Upload batch history for the Ordering Redirect track. pending_only=true
-    returns batches still awaiting a human's manual Partner Portal ->
-    Ingestion -> History check.
+async def list_batches():
+    """Upload batch history for the Ordering Redirect track.
 
     Excludes kind == "menu" batches -- those live in the same collection but
     belong to the separate Menu Feeds track's own /api/menu-feeds/batches, and
     must never surface in the Redirect FeedStatus/FeedHealth cards."""
     try:
-        repo = UploadBatchRepository()
-        batches = await asyncio.to_thread(repo.list_pending_verification if pending_only else repo.list_all)
+        batches = await asyncio.to_thread(UploadBatchRepository().list_all)
         batches = [b for b in batches if b.get("kind", "ordering") != "menu"]
         return {"batches": batches}
     except Exception as e:
@@ -455,27 +496,6 @@ async def get_batch(batch_id: str):
         if not batch:
             return {"status": "error", "message": "Batch not found."}
         return {"status": "ok", "batch": batch}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.post("/api/batches/{batch_id}/verify")
-async def verify_batch(batch_id: str, payload: BatchVerifyIn, current_user: dict = Depends(get_current_user)):
-    """
-    Records a human's self-reported result of manually checking Partner Portal ->
-    Ingestion -> History for this batch. This endpoint makes NO call to Google --
-    there is no API for "was this feed accepted," only the portal's own UI
-    (playbook section 6). It exists to record what a person saw there, not to
-    check it for them.
-    """
-    if payload.status not in (VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS):
-        return {
-            "status": "error",
-            "message": f"status must be '{VERIFICATION_CONFIRMED_CLEAN}' or '{VERIFICATION_FLAGGED_ERRORS}'.",
-        }
-    try:
-        verified_by = current_user.get("email") or current_user.get("uid", "unknown")
-        await asyncio.to_thread(UploadBatchRepository().mark_verified, batch_id, payload.status, verified_by, payload.notes)
-        return {"status": "recorded", "batch_id": batch_id, "verification_status": payload.status}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

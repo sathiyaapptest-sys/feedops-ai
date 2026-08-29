@@ -4,11 +4,10 @@ from fastapi import Request, HTTPException, status, Depends
 import os
 
 # Initialize Firebase Admin
-# NOTE: In production, use a service account key file. 
-# Here, if no key is provided, it tries to initialize with default credentials.
+PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", os.getenv("GCP_PROJECT", "gen-lang-client-0724450224"))
 if not firebase_admin._apps:
     try:
-        firebase_admin.initialize_app()
+        firebase_admin.initialize_app(options={"projectId": PROJECT_ID})
     except Exception as e:
         print(f"Failed to initialize Firebase Admin: {e}")
 

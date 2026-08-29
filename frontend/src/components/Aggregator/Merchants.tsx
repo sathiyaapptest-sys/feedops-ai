@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { Layers, Trash2 } from 'lucide-react';
+import { MerchantDetailModal } from './MerchantDetailModal';
 import { BulkUpload } from './BulkUpload';
 import { BulkMenuUpload } from './BulkMenuUpload';
 import { ReadinessScorecard } from './ReadinessScorecard';
@@ -22,6 +23,12 @@ export function Merchants() {
   const [query, setQuery] = useState('');
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [detailStoreId, setDetailStoreId] = useState<string | null>(null);
+  // Bumped after a bulk upload completes -- TriageQueue and ReadinessScorecard
+  // below each fetch their own data once on mount and have no other way to
+  // learn that a sibling upload changed it, so this is passed down to force
+  // a refetch instead of the user needing a full page reload.
+  const [refreshToken, setRefreshToken] = useState(0);
 
   useEffect(() => {
     api.listMerchants()
@@ -30,7 +37,7 @@ export function Merchants() {
         if (data.error) setError(data.error);
       })
       .catch((err) => setError(err.message || 'Could not load merchants.'));
-  }, []);
+  }, [refreshToken]);
 
   const handleRemove = async (storeId: string) => {
     setRemovingId(storeId);
@@ -61,7 +68,7 @@ export function Merchants() {
             <Layers className="w-6 h-6 text-blue-500" />
             Merchants
           </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          <p className="text-xs font-bold text-slate-500 dark:text-slate-400 mt-1">
             Validated merchants only -- matched automatically or approved in the Triage Queue.
           </p>
         </div>
@@ -74,11 +81,11 @@ export function Merchants() {
         />
       </div>
 
-      <ReadinessScorecard />
-      <TriageQueue />
+      <ReadinessScorecard refreshToken={refreshToken} />
+      <TriageQueue refreshToken={refreshToken} onResolved={() => setRefreshToken((t) => t + 1)} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <BulkUpload />
+        <BulkUpload onUploaded={() => setRefreshToken((t) => t + 1)} />
         <BulkMenuUpload />
       </div>
 
@@ -110,7 +117,11 @@ export function Merchants() {
               </thead>
               <tbody>
                 {filtered.map((m) => (
-                  <tr key={m.store_id} className="bg-white dark:bg-slate-800 border-b dark:border-slate-700">
+                  <tr
+                    key={m.store_id}
+                    onClick={() => setDetailStoreId(m.store_id)}
+                    className="bg-white dark:bg-slate-800 border-b dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/50"
+                  >
                     <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{m.name || '--'}</td>
                     <td className="px-4 py-3 font-mono text-xs">{m.store_id}</td>
                     <td className="px-4 py-3 truncate max-w-xs">{m.address || '--'}</td>
@@ -120,7 +131,7 @@ export function Merchants() {
                       </span>
                     </td>
                     <td className="px-4 py-3">{m.confidence != null ? `${(m.confidence * 100).toFixed(0)}%` : '--'}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       {confirmId === m.store_id ? (
                         <div className="flex items-center gap-2 whitespace-nowrap">
                           <span className="text-xs text-slate-500 dark:text-slate-400">Remove?</span>
@@ -156,6 +167,10 @@ export function Merchants() {
           </div>
         )}
       </div>
+
+      {detailStoreId && (
+        <MerchantDetailModal storeId={detailStoreId} onClose={() => setDetailStoreId(null)} />
+      )}
     </div>
   );
 }

@@ -1,10 +1,10 @@
 import os
+import json
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
-
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+from backend.tools.model_cascade import generate_content_with_cascade
 
 class MenuItem(BaseModel):
     name: str = Field(description="Name of the menu item")
@@ -23,7 +23,6 @@ class MenuData(BaseModel):
 
 class ImageMenuExtractor:
     def __init__(self):
-        # Assumes GEMINI_API_KEY is in environment
         self.client = genai.Client()
 
     def extract_from_file(self, file_path: str) -> MenuData:
@@ -47,8 +46,8 @@ class ImageMenuExtractor:
         Identify option groups or modifiers (e.g., Size: Small/Large).
         """
         
-        response = self.client.models.generate_content(
-            model=GEMINI_MODEL,
+        text, _ = generate_content_with_cascade(
+            client=self.client,
             contents=[
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
                 prompt
@@ -56,6 +55,7 @@ class ImageMenuExtractor:
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=MenuData,
-            )
+            ),
+            vision_only=True,
         )
-        return response.parsed
+        return MenuData.model_validate_json(text)

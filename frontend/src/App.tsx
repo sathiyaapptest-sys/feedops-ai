@@ -15,7 +15,6 @@ import { MyStore } from './components/Merchant/MyStore';
 import { Menu } from './components/Merchant/Menu';
 import { Services } from './components/Merchant/Services';
 import { StoreView } from './components/Customer/StoreView';
-import { MerchantOnboardingCard } from './components/MerchantOnboardingCard';
 import { AskFeedOps } from './components/AskFeedOps';
 
 function App() {
@@ -47,6 +46,7 @@ function App() {
           <Route path="onboarding/menu-sandbox-review" element={<StepNav track="menu" stepKey="menu_sandbox_review"><MenuReviewStep stepKey="menu_sandbox_review" /></StepNav>} />
           <Route path="onboarding/menu-production-development" element={<StepNav track="menu" stepKey="menu_production_development"><MenuDevelopmentStep environment="production" /></StepNav>} />
           <Route path="onboarding/menu-launch-review" element={<StepNav track="menu" stepKey="menu_launch_review"><MenuReviewStep stepKey="menu_launch_review" /></StepNav>} />
+          <Route path="ask" element={<AskFeedOps />} />
         </Route>
 
         {/* Protected Routes (Merchant) */}
@@ -55,7 +55,7 @@ function App() {
           <Route path="store" element={<MyStore />} />
           <Route path="menu" element={<Menu />} />
           <Route path="services" element={<Services />} />
-          <Route path="onboard" element={<MerchantOnboardingCard />} />
+          <Route path="onboard" element={<Navigate to="/merchant/store" replace />} />
           <Route path="ask" element={<AskFeedOps />} />
         </Route>
       </Routes>

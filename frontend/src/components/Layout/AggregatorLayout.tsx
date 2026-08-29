@@ -1,16 +1,12 @@
 import { Outlet, useNavigate, NavLink } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth } from '../../lib/firebase';
-import { LogOut, LayoutDashboard, Layers } from 'lucide-react';
+import { LogOut, LayoutDashboard, Layers, HelpCircle } from 'lucide-react';
 
-// Nav is deliberately just these two: Dashboard is the 7-step Google
-// Ordering Redirect journey (Setup through Launch Review) -- every step's
-// page is reached by clicking into it from there, not from a flat top-level
-// list. Merchants is roster + entity-matching ops, which isn't part of that
-// journey at all.
 const NAV_ITEMS = [
   { to: '/aggregator/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/aggregator/merchants', label: 'Merchants', icon: Layers },
+  { to: '/aggregator/ask', label: 'Ask FeedOps', icon: HelpCircle },
 ];
 
 export default function AggregatorLayout() {
@@ -22,9 +18,9 @@ export default function AggregatorLayout() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 flex">
-      {/* Sidebar */}
-      <aside className="w-64 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col">
+    <div className="h-screen bg-slate-50 dark:bg-slate-900 flex overflow-hidden">
+      {/* Sidebar -- fixed height, no scroll of its own; only <main> below scrolls */}
+      <aside className="w-64 flex-shrink-0 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col">
         <div className="p-4 border-b border-slate-200 dark:border-slate-700">
           <h2 className="text-xl font-bold text-slate-900 dark:text-white">FeedOps Aggregator</h2>
         </div>
@@ -59,8 +55,8 @@ export default function AggregatorLayout() {
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 p-8">
+      {/* Main Content -- the only scrollable region */}
+      <main className="flex-1 p-8 overflow-y-auto">
         <Outlet />
       </main>
     </div>

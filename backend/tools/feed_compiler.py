@@ -48,8 +48,8 @@ FEED_DATA_FILE_PREFIXES = {
     "service": "services",
 }
 
-# section 3.2: the enum is DELIVERY/TAKEOUT -- not PICKUP.
-VALID_SERVICE_TYPES = {"DELIVERY", "TAKEOUT"}
+# section 3.2: the supported service types are DELIVERY, TAKEOUT, DINE_IN
+VALID_SERVICE_TYPES = {"DELIVERY", "TAKEOUT", "DINE_IN"}
 
 MENU_FEED_DESCRIPTOR_NAME = "google.food_menu"
 MENU_FEED_FILE_PREFIX = "menu"
@@ -216,7 +216,16 @@ class ActionsCenterFeedCompiler:
                 logger.warning(f"Skipping merchant '{entity_id}': no structured or unstructured address.")
                 continue
 
-            order_url = merchant.get("action_link") or merchant.get("url") or ""
+            # Strictly check action_link / action_url / url -- no guessing or fabricated mock URLs
+            raw_url = str(merchant.get("action_link") or merchant.get("action_url") or merchant.get("url") or "").strip()
+            is_valid_url = bool(raw_url and (raw_url.startswith("http://") or raw_url.startswith("https://")) and "." in raw_url)
+            order_url = raw_url if is_valid_url else ""
+
+            if not order_url:
+                logger.warning(
+                    f"Merchant '{entity_id}' has missing or invalid action_link ('{raw_url}'). "
+                    "Google Actions Center requires a valid destination URL for Ordering Redirect."
+                )
 
             entity_rows.append({
                 "entity_id": entity_id,
@@ -226,25 +235,24 @@ class ActionsCenterFeedCompiler:
                 "location": location,
             })
 
-            # Not yet captured by intake, so default to DELIVERY -- the most common
-            # case -- rather than omit the merchant from the action feed entirely.
-            # Queued: let onboarding intake specify this explicitly per merchant.
-            service_types = merchant.get("service_types") or ["DELIVERY"]
-            link_ids: Dict[str, str] = {}
-            for service_type in service_types:
-                if service_type not in VALID_SERVICE_TYPES:
-                    logger.warning(f"Skipping invalid service_type '{service_type}' for '{entity_id}'.")
-                    continue
-                link_id = f"link_{service_type.lower()}_{entity_id}"
-                link_ids[service_type] = link_id
-                action_rows.append({
-                    "entity_id": entity_id,
-                    "link_id": link_id,
-                    "url": order_url,
-                    "actions": [{"food_ordering_info": {"service_type": service_type}}],
-                })
+            # Action rows require a valid http/https destination URL per madden.ingestion proto
+            if order_url:
+                service_types = merchant.get("service_types") or ["DELIVERY"]
+                link_ids: Dict[str, str] = {}
+                for service_type in service_types:
+                    if service_type not in VALID_SERVICE_TYPES:
+                        logger.warning(f"Skipping invalid service_type '{service_type}' for '{entity_id}'.")
+                        continue
+                    link_id = f"link_{service_type.lower()}_{entity_id}"
+                    link_ids[service_type] = link_id
+                    action_rows.append({
+                        "entity_id": entity_id,
+                        "link_id": link_id,
+                        "url": order_url,
+                        "actions": [{"food_ordering_info": {"service_type": service_type}}],
+                    })
 
-            service_rows.extend(self._build_service_rows(merchant, entity_id, list(link_ids.keys()), link_ids))
+                service_rows.extend(self._build_service_rows(merchant, entity_id, list(link_ids.keys()), link_ids))
 
         feeds_generated: Dict[str, str] = {}
         for feed_type, rows in (("entity", entity_rows), ("action", action_rows), ("service", service_rows)):

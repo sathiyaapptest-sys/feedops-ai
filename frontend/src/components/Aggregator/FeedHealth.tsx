@@ -9,18 +9,35 @@ interface Batch {
   excluded_count: number;
   upload_status: string;
   dry_run: boolean;
-  verification_status: 'pending' | 'confirmed_clean' | 'flagged_errors';
-  verification_notes?: string | null;
+  feed_types?: string[];
   created_at?: string;
+  [key: string]: any; // feed_status_{type} fields, dynamic per feed type
 }
 
 type Health = 'clean' | 'pending' | 'attention';
 
+// Derived purely from Feed Status's own per-file feed_status_{type} marks --
+// there used to be a second, separate "Mark Clean/Flag Errors" action on this
+// card writing its own verification_status field, but nothing ever read that
+// except this card's own dots. Two accept/reject mechanisms on the same
+// batch was confusing and only one of them (feed_status_*) actually drives
+// Dashboard progress, so this card is now read-only: a summary view of the
+// one real mechanism, not a second one.
 function batchHealth(batch: Batch): Health {
-  if (batch.upload_status !== 'success' || batch.verification_status === 'flagged_errors') return 'attention';
-  if (batch.verification_status === 'pending') return 'pending';
-  return 'clean';
+  if (batch.upload_status !== 'success') return 'attention';
+  const feedTypes = batch.feed_types && batch.feed_types.length > 0 ? batch.feed_types : [];
+  if (feedTypes.length === 0) return 'pending';
+  const statuses = feedTypes.map((ft) => batch[`feed_status_${ft}`]);
+  if (statuses.some((s) => s === 'flagged_errors')) return 'attention';
+  if (statuses.every((s) => s === 'confirmed_clean')) return 'clean';
+  return 'pending';
 }
+
+const HEALTH_LABEL: Record<Health, string> = {
+  clean: 'all files accepted',
+  pending: 'awaiting review',
+  attention: 'needs attention',
+};
 
 const DOT_CLASS: Record<Health, string> = {
   clean: 'bg-green-500',
@@ -44,8 +61,6 @@ export function FeedHealth({ environment }: FeedHealthProps) {
   const [error, setError] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
   const [triggerResult, setTriggerResult] = useState<string | null>(null);
-  const [verifyingId, setVerifyingId] = useState<string | null>(null);
-  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [productionUnlocked, setProductionUnlocked] = useState<boolean | null>(null); // null = loading
 
   useEffect(() => {
@@ -103,18 +118,6 @@ export function FeedHealth({ environment }: FeedHealthProps) {
     }
   };
 
-  const handleVerify = async (batchId: string, status: 'confirmed_clean' | 'flagged_errors') => {
-    setVerifyingId(batchId);
-    try {
-      await api.verifyBatch(batchId, status, noteDrafts[batchId] || undefined);
-      await load();
-    } catch (err: any) {
-      setError(`Could not record verification: ${err.message}`);
-    } finally {
-      setVerifyingId(null);
-    }
-  };
-
   const latest = batches && batches.length > 0 ? batches[0] : null;
   const hoursSinceLatest = latest?.created_at
     ? (Date.now() - new Date(latest.created_at).getTime()) / (1000 * 60 * 60)
@@ -153,7 +156,7 @@ export function FeedHealth({ environment }: FeedHealthProps) {
             ? 'No feed push on record yet -- run one with "Upload Now" or wait for the daily job.'
             : dayGap
             ? `No push recorded in over 36 hours (last one: ${formatWhen(latest.created_at)}) -- the daily cadence has lapsed. Google's own review treats a missed day as "uploaded later than expected."`
-            : 'The most recent push needs attention -- see the batch below.'}
+            : 'The most recent push needs attention -- see Feed Status above to mark files Accepted/Rejected.'}
         </div>
       )}
 
@@ -194,51 +197,20 @@ export function FeedHealth({ environment }: FeedHealthProps) {
               return (
                 <div
                   key={b.batch_id}
-                  className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700 text-sm"
+                  className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700 text-sm"
                 >
-                  <div className="flex items-center gap-3 min-w-0">
-                    {health === 'clean' && <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />}
-                    {health === 'pending' && <Clock className="w-4 h-4 text-amber-400 flex-shrink-0" />}
-                    {health === 'attention' && <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />}
-                    <div className="min-w-0">
-                      <p className="font-medium text-slate-900 dark:text-white truncate">
-                        {b.batch_id} <span className="text-slate-400 font-normal">({b.environment}{b.dry_run ? ', dry-run' : ''})</span>
-                      </p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                        {formatWhen(b.created_at)} -- {b.merchant_count} merchant(s)
-                        {b.excluded_count ? `, ${b.excluded_count} excluded` : ''} -- {b.verification_status.replace('_', ' ')}
-                      </p>
-                      {b.verification_notes && (
-                        <p className="text-xs text-slate-400 italic mt-0.5">"{b.verification_notes}"</p>
-                      )}
-                    </div>
+                  {health === 'clean' && <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />}
+                  {health === 'pending' && <Clock className="w-4 h-4 text-amber-400 flex-shrink-0" />}
+                  {health === 'attention' && <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />}
+                  <div className="min-w-0">
+                    <p className="font-medium text-slate-900 dark:text-white truncate">
+                      {b.batch_id} <span className="text-slate-400 font-normal">({b.environment}{b.dry_run ? ', dry-run' : ''})</span>
+                    </p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {formatWhen(b.created_at)} -- {b.merchant_count} merchant(s)
+                      {b.excluded_count ? `, ${b.excluded_count} excluded` : ''} -- {HEALTH_LABEL[health]}
+                    </p>
                   </div>
-
-                  {b.verification_status === 'pending' && (
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <input
-                        type="text"
-                        placeholder="notes (optional)"
-                        value={noteDrafts[b.batch_id] || ''}
-                        onChange={(e) => setNoteDrafts({ ...noteDrafts, [b.batch_id]: e.target.value })}
-                        className="hidden lg:block w-32 px-2 py-1 text-xs border border-slate-300 dark:border-slate-600 rounded bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-white"
-                      />
-                      <button
-                        onClick={() => handleVerify(b.batch_id, 'confirmed_clean')}
-                        disabled={verifyingId === b.batch_id}
-                        className="px-2 py-1 text-xs bg-green-100 hover:bg-green-200 text-green-700 dark:bg-green-900/30 dark:text-green-300 rounded disabled:opacity-50"
-                      >
-                        Mark Clean
-                      </button>
-                      <button
-                        onClick={() => handleVerify(b.batch_id, 'flagged_errors')}
-                        disabled={verifyingId === b.batch_id}
-                        className="px-2 py-1 text-xs bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-900/30 dark:text-red-300 rounded disabled:opacity-50"
-                      >
-                        Flag Errors
-                      </button>
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -247,8 +219,9 @@ export function FeedHealth({ environment }: FeedHealthProps) {
       )}
 
       <p className="mt-3 text-xs text-slate-400">
-        Verification is self-reported: Google exposes no API to confirm a feed was accepted, only
-        Partner Portal &rarr; Ingestion &rarr; History. Check there, then mark the batch above.
+        Read-only: this summarizes the per-file marks from Feed Status above (derived from feed_status_*, the
+        same data that builds your 3-day streak) -- Feed Status is the one place you actually mark anything
+        Accepted or Rejected after checking Partner Portal &rarr; Ingestion &rarr; History.
       </p>
     </div>
   );

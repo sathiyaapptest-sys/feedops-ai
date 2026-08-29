@@ -16,71 +16,36 @@ class GooglePlacesClient:
 
     async def search_places(self, query: str) -> Dict[str, Any]:
         if not self.api_key:
-            return self._mock_search_places(query)
-            
+            raise ValueError("GOOGLE_PLACES_API_KEY is not configured.")
+
+        # If query is a Google Place ID, fetch directly via official Place Details API
+        if query.startswith("ChIJ"):
+            url = f"https://places.googleapis.com/v1/places/{query}"
+            headers = {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": self.api_key,
+                "X-Goog-FieldMask": "id,displayName,formattedAddress,location,regularOpeningHours,businessStatus,internationalPhoneNumber"
+            }
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return {"places": [response.json()]}
+                return {"places": []}
+
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.api_key,
             "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.regularOpeningHours,places.businessStatus,places.internationalPhoneNumber"
         }
-        
+
         payload = {
             "textQuery": query
         }
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(self.base_url, json=payload, headers=headers)
             response.raise_for_status()
             return response.json()
-            
-    def _mock_search_places(self, query: str) -> Dict[str, Any]:
-        if query == "ChIJieatS2VjUzoRcxdYOKeD2mw":
-            return {
-                "places": [
-                    {
-                        "id": "ChIJieatS2VjUzoRcxdYOKeD2mw",
-                        "displayName": {"text": "THE SPOT"},
-                        "formattedAddress": "37, Dumas St, White Town, Puducherry 605001",
-                        "internationalPhoneNumber": "+91 98765 43210",
-                        "location": {"latitude": 11.9314, "longitude": 79.8339},
-                        "businessStatus": "OPERATIONAL",
-                        "regularOpeningHours": {
-                            "periods": [
-                                {"open": {"day": 1, "hour": 10, "minute": 0}, "close": {"day": 1, "hour": 22, "minute": 30}},
-                                {"open": {"day": 2, "hour": 10, "minute": 0}, "close": {"day": 2, "hour": 22, "minute": 30}},
-                                {"open": {"day": 3, "hour": 10, "minute": 0}, "close": {"day": 3, "hour": 22, "minute": 30}},
-                                {"open": {"day": 4, "hour": 10, "minute": 0}, "close": {"day": 4, "hour": 22, "minute": 30}},
-                                {"open": {"day": 5, "hour": 10, "minute": 0}, "close": {"day": 5, "hour": 22, "minute": 30}},
-                                {"open": {"day": 6, "hour": 10, "minute": 0}, "close": {"day": 6, "hour": 22, "minute": 30}},
-                                {"open": {"day": 0, "hour": 10, "minute": 0}, "close": {"day": 0, "hour": 22, "minute": 30}}
-                            ]
-                        }
-                    }
-                ]
-            }
-
-        return {
-            "places": [
-                {
-                    "id": "ChIJN1t_tDeuEmsRUsoyG83frY4" if query != "test" else "test",
-                    "displayName": {"text": f"Mock Place for {query}"},
-                    "formattedAddress": "123 Mock St, Mock City",
-                    "internationalPhoneNumber": "+1 555-123-4567",
-                    "location": {"latitude": 37.422, "longitude": -122.084},
-                    "businessStatus": "OPERATIONAL",
-                    "regularOpeningHours": {
-                        "periods": [
-                            {"open": {"day": 1, "hour": 9, "minute": 0}, "close": {"day": 1, "hour": 22, "minute": 0}},
-                            {"open": {"day": 2, "hour": 9, "minute": 0}, "close": {"day": 2, "hour": 22, "minute": 0}},
-                            {"open": {"day": 3, "hour": 9, "minute": 0}, "close": {"day": 3, "hour": 22, "minute": 0}},
-                            {"open": {"day": 4, "hour": 9, "minute": 0}, "close": {"day": 4, "hour": 22, "minute": 0}},
-                            {"open": {"day": 5, "hour": 9, "minute": 0}, "close": {"day": 5, "hour": 23, "minute": 0}},
-                            {"open": {"day": 6, "hour": 10, "minute": 0}, "close": {"day": 6, "hour": 23, "minute": 0}}
-                        ]
-                    }
-                }
-            ]
-        }
 
 def _name_similarity(a: str, b: str) -> float:
     normalize = lambda s: re.sub(r"[^a-z0-9 ]", "", (s or "").lower()).strip()
@@ -98,7 +63,11 @@ async def resolve_entity_match(name: str, address: str) -> Dict[str, Any]:
     Google Business Profile draft rather than trusting it blindly.
     """
     client = GooglePlacesClient()
-    result = await client.search_places(f"{name} {address}".strip())
+    try:
+        result = await client.search_places(f"{name} {address}".strip())
+    except Exception as e:
+        return {"confidence": 0.0, "place_id": None, "candidate": None, "error": str(e)}
+
     candidates = result.get("places", [])
     if not candidates:
         return {"confidence": 0.0, "place_id": None, "candidate": None}
@@ -123,11 +92,11 @@ async def resolve_entity_match(name: str, address: str) -> Dict[str, Any]:
     }
 
 
+from backend.tools.model_cascade import generate_content_with_cascade
+
 def verify_storefront_multimodal(store_image_path: str, streetview_image_path: str) -> Dict[str, Any]:
     client = genai.Client()
     
-    # In a real scenario, you'd upload these files or pass them if small enough
-    # Here we assume the paths are accessible by the genai SDK.
     try:
         store_file = client.files.upload(file=store_image_path)
         street_file = client.files.upload(file=streetview_image_path)
@@ -140,16 +109,17 @@ def verify_storefront_multimodal(store_image_path: str, streetview_image_path: s
             "Output as JSON with keys 'score' and 'reasoning'."
         )
         
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
+        text, _ = generate_content_with_cascade(
+            client=client,
             contents=[store_file, street_file, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
             ),
+            vision_only=True,
         )
         import json
-        if response.text:
-            return json.loads(response.text)
+        if text:
+            return json.loads(text)
         return {"score": 0.0, "reasoning": "Failed to generate response"}
         
     except Exception as e:

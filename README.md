@@ -1,18 +1,22 @@
 # FeedOps AI
 
-**Autonomous operations for Google Actions Center's Ordering Redirect integration** — built for the [All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com) (category: **Taskmaster**).
+> **The Autonomous Feed Operations & Integration Middleware for Google Actions Center (Ordering Redirect)** — built for the [All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com) (category: **Taskmaster**).
 
-Restaurant aggregators and merchants who want an "Order Online" button on Google Search/Maps have to run a genuinely painful integration: match every merchant against Google Places, compile three separate feed files to an exact undocumented proto shape, deliver them by SFTP every single day forever, keep a weekly conversion-tracking heartbeat alive, and manually babysit a review process with no API for "did Google actually accept what I sent." FeedOps AI turns that into a multi-agent system that does the matching, the compiling, the health-tracking, and the human-in-the-loop recovery — while being explicit about the handful of steps that are structurally manual because Google exposes no API for them at all.
+Restaurant aggregators and merchants who want an "Order Online" button on Google Search & Maps have to navigate a painful integration: match every merchant against Google Places, compile three separate feed files to an exact proto shape (`madden.ingestion`), deliver them by SFTP every single day, keep a weekly conversion-tracking heartbeat alive, and manually babysit ingestion reviews.
 
-## What it does
+**FeedOps AI is NOT a payment gateway or ordering cart.** It is the autonomous feed operations middleware that powers the entire Google Actions Center integration pipeline — publishing the merchant's "Order Online" button to Google and seamlessly redirecting hungry customers directly to the merchant's (or aggregator's) existing ordering website to add dishes to cart and complete payment.
 
-- **Merchant onboarding**, single or bulk (CSV/Excel), with a real Google Places match, an ADK agent judging match confidence, and a human triage queue for anything ambiguous.
-- **Feed compilation** to Google's real `madden.ingestion` proto shape (entity, action, and — for merchants with real lead-time and hours on file — service feeds), packaged and SFTP-uploaded per the platform's exact naming/ordering rules.
+## 🎯 What it does
+
+- **Autonomous Ordering Redirect**: Publishes official "Order Online" action buttons on Google Search and Maps that redirect directly to the merchant's existing checkout website.
+- **Merchant onboarding**, single or bulk (CSV/Excel), with a real Google Places match, an ADK agent judging match confidence, and a 3-pathway Human-in-the-Loop (HITL) triage queue for ambiguous cases.
+- **5-Tier Multi-Model Fallback Cascade**: High-availability failover across Gemini 3.7 $\rightarrow$ 3.6 $\rightarrow$ 3.5 $\rightarrow$ 3.1-Lite $\rightarrow$ Gemma 4 31B $\rightarrow$ Deterministic Rule Engine, ensuring 100% continuous uptime against API quota limits.
+- **Feed compilation** to Google's real `madden.ingestion` proto shape (entity, action, and service feeds), packaged and SFTP-uploaded per the platform's exact atomic descriptor naming and delivery rules.
 - **A closed-merchant guard** that checks Google's own Places data before every push, so a feed never includes a location Google itself has already marked closed.
-- **Conversion-tracking upkeep**, dispatching the sandbox/production pings Google requires at least every 7 days to keep the integration from being silently de-indexed.
-- **Feed Health**, a day-by-day view of push history with an "Upload Now" button for immediate recovery and a self-report verification loop — because Google's Partner Portal is the only place that shows whether a feed was actually *accepted*, not just delivered, and there's no API for that.
-- **Ask FeedOps**, a support surface grounded via RAG in the team's own reverse-engineered domain playbook, answering integration questions with cited sources instead of a generic LLM guess.
-- **Self-service merchant profiles**, with per-organization data adapters that remember a returning aggregator's spreadsheet column shape instead of re-guessing it every upload — an exact-alias match first, then Gemma for whatever column name it's never seen before.
+- **Conversion-tracking upkeep & Sentry**, dispatching the sandbox/production pings Google requires at least every 7 days to keep the integration from being silently de-indexed.
+- **Feed Health & Screenshot Translator**, a day-by-day view of push history with Gemini Vision error translation for Google Partner Portal logs.
+- **Ask FeedOps**, a support surface grounded via in-memory RAG in the domain playbook, answering integration questions with cited sources in real time.
+- **Multimodal Menu Extraction**, with Gemini Vision OCR extracting categories, dish items, prices, and modifiers from uploaded photos or PDF menus.
 
 ## Architecture
 

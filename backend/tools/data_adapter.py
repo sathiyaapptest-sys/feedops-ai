@@ -46,7 +46,10 @@ FIELD_ALIASES: Dict[str, List[str]] = {
     "name": ["name", "store name", "restaurant", "restaurant name", "merchant name", "business name"],
     "address": ["address", "street", "address 1", "location", "full address"],
     "telephone": ["telephone", "phone", "phone number", "contact number"],
-    "action_link": ["action link", "order url", "order link", "website", "ordering url"],
+    "action_link": [
+        "action link", "order url", "order link", "website", "ordering url",
+        "action url", "action_url", "store url", "store link", "landing page", "checkout url"
+    ],
 }
 
 

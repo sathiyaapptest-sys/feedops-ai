@@ -8,7 +8,22 @@ const FEED_LABELS: Record<string, string> = {
   service: 'Service Feed',
 };
 
+// What each feed file actually carries, so "why should I mark this" has a
+// real answer instead of three unexplained rows.
+const FEED_DESCRIPTIONS: Record<string, string> = {
+  entity: 'The restaurant listing itself -- name, address, phone. Tells Google which of your locations exist.',
+  action: 'The "Order Online" deep link Google shows shoppers -- what actually sends a customer to your ordering page.',
+  service: 'Delivery/pickup hours and lead time -- lets Google show accurate availability and wait times.',
+};
+
 const FEED_ORDER = ['entity', 'action', 'service'];
+
+function formatWhen(created_at?: string) {
+  if (!created_at) return 'unknown time';
+  const d = new Date(created_at);
+  if (isNaN(d.getTime())) return 'unknown time';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
 
 interface Batch {
   batch_id: string;
@@ -161,8 +176,10 @@ export function FeedStatus({ environment }: FeedStatusProps) {
         Feed Status ({environment === 'sandbox' ? 'Sandbox' : 'Production'})
       </h2>
       <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-        Per-file acceptance for the most recent push -- check Partner Portal &rarr; Ingestion &rarr; History
-        for each file, then mark it here.
+        Google gives this app no API to confirm a feed was actually accepted -- only Partner Portal &rarr;
+        Ingestion &rarr; History shows that. So: after each push, check that screen for each file below, then
+        click Mark Accepted (or Mark Rejected if Partner Portal shows an error). This is what builds the "3
+        consecutive clean days" progress you see on the Dashboard for this step -- it won't advance until you do.
       </p>
 
       {error && (
@@ -191,7 +208,12 @@ export function FeedStatus({ environment }: FeedStatusProps) {
                       {status === 'confirmed_clean' && <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />}
                       {status === 'flagged_errors' && <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />}
                       {status === 'pending' && <span className="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0" />}
-                      <span className="font-medium text-slate-900 dark:text-white">{FEED_LABELS[ft] || ft}</span>
+                      <div>
+                        <span className="font-medium text-slate-900 dark:text-white block">{FEED_LABELS[ft] || ft}</span>
+                        {FEED_DESCRIPTIONS[ft] && (
+                          <span className="text-xs text-slate-500 dark:text-slate-400">{FEED_DESCRIPTIONS[ft]}</span>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <button
@@ -270,6 +292,10 @@ export function FeedStatus({ environment }: FeedStatusProps) {
                   Compiled Feed Output
                 </h3>
               </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
+                From your last {environment} push -- {formatWhen(latest?.created_at)}, {latest?.merchant_count ?? '?'} merchant(s).
+                Changed your roster since then? This won't reflect it until you push again with "Upload Now" below.
+              </p>
               <div className="flex gap-2 mb-2">
                 {FEED_ORDER.filter((ft) => feedContent[ft]).map((ft) => (
                   <button
