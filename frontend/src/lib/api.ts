@@ -200,24 +200,38 @@ export const api = {
    * automatic match with the address the reviewer confirmed themselves
    * (via a free Google Maps text search, no Places API involved). */
   resolveTriage: async (id: string, action: string, address?: string) => {
+    const token = await getIdToken();
     const res = await fetch(`${API_BASE_URL}/api/triage/resolve`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ id, action, address }),
     });
     return res.json();
   },
   clearAllMenus: async (): Promise<{ status: string; cleared_count?: number; message?: string }> => {
-    const res = await fetch(`${API_BASE_URL}/api/menus/clear-all`, { method: 'POST' });
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/menus/clear-all`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
     return res.json();
   },
   clearAllMerchants: async (): Promise<{ status: string; cleared_count?: number; message?: string }> => {
-    const res = await fetch(`${API_BASE_URL}/api/merchants/clear-all`, { method: 'POST' });
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/merchants/clear-all`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
     return res.json();
   },
   triggerPipeline: async (environment: 'sandbox' | 'production' = 'sandbox') => {
+    const token = await getIdToken();
     const res = await fetch(`${API_BASE_URL}/api/feeds/trigger-pipeline?environment=${environment}`, {
       method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     return res.json();
   },
@@ -288,20 +302,24 @@ export const api = {
     return res.json();
   },
   uploadMenuImage: async (file: File) => {
+    const token = await getIdToken();
     const formData = new FormData();
     formData.append('file', file);
     const res = await fetch(`${API_BASE_URL}/api/upload/menu-image`, {
       method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
     });
     return res.json();
   },
   uploadSpreadsheet: async (file: File, replaceExisting: boolean = false) => {
+    const token = await getIdToken();
     const formData = new FormData();
     formData.append('file', file);
     if (replaceExisting) formData.append('replace_existing', 'true');
     const res = await fetch(`${API_BASE_URL}/api/upload/spreadsheet`, {
       method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
     });
     return res.json();
@@ -312,10 +330,12 @@ export const api = {
    * computing the identical store_id server-side, so the two files can be
    * uploaded in either order. */
   uploadMenuSpreadsheet: async (file: File) => {
+    const token = await getIdToken();
     const formData = new FormData();
     formData.append('file', file);
     const res = await fetch(`${API_BASE_URL}/api/upload/menu-spreadsheet`, {
       method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
     });
     return res.json();
@@ -329,10 +349,12 @@ export const api = {
    * also returns advisory per-feed accept/reject suggestions -- never a
    * silent status write. */
   analyzeFeedScreenshot: async (file: File) => {
+    const token = await getIdToken();
     const formData = new FormData();
     formData.append('file', file);
     const res = await fetch(`${API_BASE_URL}/api/upload/feed-screenshot`, {
       method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
     });
     return res.json();
@@ -341,11 +363,13 @@ export const api = {
    * auto-match, from a Partner Portal CSV export -- suggestions only, no
    * write-back to Google. */
   assistEntityMatch: async (file: File, orgId?: string) => {
+    const token = await getIdToken();
     const formData = new FormData();
     formData.append('file', file);
     if (orgId) formData.append('org_id', orgId);
     const res = await fetch(`${API_BASE_URL}/api/entity-match/assist`, {
       method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
     });
     return res.json();
