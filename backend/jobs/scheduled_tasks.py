@@ -201,22 +201,43 @@ def _append_exclude_list(excluded: List[Dict[str, Any]], path: str = EXCLUDE_LIS
             f.write(f"{m['store_id']}  # {m['name']} -- {m['exclude_reason']} ({datetime.now(timezone.utc).isoformat()})\n")
 
 
-def _sftp_client_for(environment: str) -> GoogleSFTPClient:
+def _sftp_client_for(environment: str, org_id: Optional[str] = None) -> GoogleSFTPClient:
     username_env = f"GOOGLE_SFTP_USERNAME_{environment.upper()}"
-    username = os.getenv(username_env, os.getenv("GOOGLE_SFTP_USERNAME", "feedops_partner"))
+    username = os.getenv(username_env, os.getenv("GOOGLE_SFTP_USERNAME"))
+    
+    if not username and org_id:
+        try:
+            from backend.db.firestore_client import OrganizationRepository
+            org = OrganizationRepository().get(org_id) or {}
+            config = org.get("config", {})
+            username = config.get(f"sftp_username_{environment.lower()}") or config.get("sftp_username_sandbox")
+        except Exception:
+            pass
+
+    if not username:
+        username = "feedops_partner"
+
     key_path = os.getenv("GOOGLE_SFTP_KEY_PATH")
+    if not key_path or not os.path.exists(os.path.expanduser(key_path)):
+        for candidate in ["~/.ssh/google_actions_center", "~/.ssh/id_ed25519", "~/.ssh/id_rsa"]:
+            if os.path.exists(os.path.expanduser(candidate)):
+                key_path = candidate
+                break
+
     dry_run = not (key_path and os.path.exists(os.path.expanduser(key_path)))
     if dry_run:
         logger.warning(
-            f"No usable key at GOOGLE_SFTP_KEY_PATH ({key_path!r}); running SFTP upload in dry-run mode."
+            f"No usable key at GOOGLE_SFTP_KEY_PATH or standard SSH locations; running SFTP upload in dry-run mode."
         )
     return GoogleSFTPClient(private_key_path=key_path, username=username, dry_run=dry_run)
+
 
 
 def run_daily_feed_push(
     environment: str = "sandbox",
     snapshot_path: str = DEFAULT_SNAPSHOT_PATH,
     allow_fixture_fallback: bool = True,
+    org_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Regenerates the feed bundle from the current merchant data and uploads it."""
     logger.info(f"Starting daily feed push ({environment})...")
@@ -269,7 +290,7 @@ def run_daily_feed_push(
 
     feed_bundle = compiler.compile_feeds(merged)
 
-    sftp = _sftp_client_for(environment)
+    sftp = _sftp_client_for(environment, org_id=org_id)
     upload_result = sftp.upload_feeds(list(feed_bundle.values()))
     ok = upload_result.get("status") == "success"
 

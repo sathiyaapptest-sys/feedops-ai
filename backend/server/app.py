@@ -645,7 +645,8 @@ async def trigger_pipeline(environment: str = "sandbox", current_user: dict = De
         return {"ok": False, "error": f"environment must be 'sandbox' or 'production', got '{environment}'."}
     
     t0 = datetime.now(timezone.utc)
-    summary = await asyncio.to_thread(run_daily_feed_push, environment, allow_fixture_fallback=False)
+    org_id = current_user.get("uid")
+    summary = await asyncio.to_thread(run_daily_feed_push, environment, allow_fixture_fallback=False, org_id=org_id)
     duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
     
     is_ok = summary.get("ok", False)
