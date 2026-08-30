@@ -1,12 +1,8 @@
 import { useState } from 'react';
 import { api } from '../../lib/api';
-import { UploadCloud, Loader2, Trash2, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { UploadCloud, Loader2, Trash2, AlertCircle, CheckCircle2, Download, FileSpreadsheet, Info, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface BulkUploadProps {
-  // Called after any completed upload (success or partial) so sibling
-  // components that own their own data -- the Triage Queue, the validated
-  // Merchants table, the Readiness Scorecard -- know to refetch. None of them
-  // are notified otherwise; each only ever fetched once on its own mount.
   onUploaded?: () => void;
 }
 
@@ -17,6 +13,23 @@ export function BulkUpload({ onUploaded }: BulkUploadProps) {
   const [clearMessage, setClearMessage] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
   const [replaceExisting, setReplaceExisting] = useState(false);
+  const [showFieldGuide, setShowFieldGuide] = useState(false);
+
+  const handleDownloadSampleCsv = () => {
+    const csvContent =
+      "vendor_id,name,address,phone,email,action_link,latitude,longitude,service_types,lead_time_minutes,service_hours,place_id,website\n" +
+      "store_101,Joe's Artisan Pizza,123 Main St Austin TX 78701,+15125550101,owner@joespizza.com,https://order.joespizza.com,30.2672,-97.7431,\"DELIVERY,TAKEOUT\",30,\"Mon-Sun 11:00-23:00\",ChIJgUbEo8cfqokR5lP9_bManAE,https://joespizza.com\n" +
+      "store_102,Tokyo Ramen Bar,456 Broadway Ave New York NY 10013,+12125550102,contact@tokyoramen.com,https://tokyoramen.com/menu,40.7209,-74.0007,\"TAKEOUT,DINE_IN\",20,\"Mon-Sat 12:00-22:00\",ChIJOwg_06VPwokRYk534QaPC8g,https://tokyoramen.com\n" +
+      "store_103,Green Garden Salad Co,789 Market St San Francisco CA 94103,+14155550103,hello@greengardensf.com,https://greengardensf.com/order,37.7858,-122.4065,\"DELIVERY,TAKEOUT\",15,\"Mon-Fri 10:00-19:00\",ChIJd8BlQ2B-j4AR235Q_aI1W9Y,https://greengardensf.com\n";
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'feedops_bulk_merchants_template.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
@@ -32,7 +45,6 @@ export function BulkUpload({ onUploaded }: BulkUploadProps) {
       console.error(err);
     } finally {
       setUploading(false);
-      // clear the input
       e.target.value = '';
     }
   };
@@ -60,13 +72,52 @@ export function BulkUpload({ onUploaded }: BulkUploadProps) {
   return (
     <div className="p-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col justify-between">
       <div>
-        <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2 mb-2">
-          <UploadCloud className="w-5 h-5 text-blue-500" />
-          Bulk Restaurant Upload
-        </h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-          Restaurant rows only -- name, address, phone. Upload menu items separately on the right.
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+            <UploadCloud className="w-5 h-5 text-blue-500" />
+            Bulk Restaurant Upload
+          </h2>
+          <button
+            type="button"
+            onClick={handleDownloadSampleCsv}
+            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors shadow-sm"
+            title="Download ready-to-use CSV template"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Sample CSV</span>
+          </button>
+        </div>
+
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+          Upload multi-location restaurant spreadsheets. Compatible with CSV, XLSX, or XLS exports.
         </p>
+
+        {/* Interactive Field Specifications Toggle */}
+        <div className="mb-3">
+          <button
+            type="button"
+            onClick={() => setShowFieldGuide(!showFieldGuide)}
+            className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 flex items-center gap-1 font-medium"
+          >
+            <Info className="w-3.5 h-3.5 text-blue-500" />
+            <span>{showFieldGuide ? 'Hide Required Field Specifications' : 'View Required & Optional Fields'}</span>
+            {showFieldGuide ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
+
+          {showFieldGuide && (
+            <div className="mt-2 p-3 bg-slate-50 dark:bg-slate-900/80 rounded-lg border border-slate-200 dark:border-slate-700 text-xs space-y-2 animate-in fade-in">
+              <div className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                <FileSpreadsheet className="w-3.5 h-3.5 text-blue-500" />
+                Google Actions Center Supported Columns:
+              </div>
+              <ul className="space-y-1 text-slate-600 dark:text-slate-400 list-disc list-inside">
+                <li><strong className="text-slate-800 dark:text-slate-200">Mandatory:</strong> <code className="font-mono text-[11px] text-blue-600 dark:text-blue-400">name</code>, <code className="font-mono text-[11px] text-blue-600 dark:text-blue-400">address</code>, <code className="font-mono text-[11px] text-blue-600 dark:text-blue-400">action_link</code>, <code className="font-mono text-[11px] text-blue-600 dark:text-blue-400">vendor_id</code></li>
+                <li><strong className="text-slate-800 dark:text-slate-200">Recommended:</strong> <code className="font-mono text-[11px]">phone</code> (E.164), <code className="font-mono text-[11px]">email</code>, <code className="font-mono text-[11px]">latitude</code>, <code className="font-mono text-[11px]">longitude</code>, <code className="font-mono text-[11px]">service_types</code> (DELIVERY/TAKEOUT/DINE_IN)</li>
+                <li><strong className="text-slate-800 dark:text-slate-200">Optional:</strong> <code className="font-mono text-[11px]">lead_time_minutes</code>, <code className="font-mono text-[11px]">service_hours</code>, <code className="font-mono text-[11px]">place_id</code> (Instant match), <code className="font-mono text-[11px]">website</code></li>
+              </ul>
+            </div>
+          )}
+        </div>
 
         <div className="flex items-center justify-center w-full">
           <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-300 border-dashed rounded-lg cursor-pointer bg-slate-50 dark:hover:bg-slate-800 dark:bg-slate-700/50 hover:bg-slate-100 dark:border-slate-600 dark:hover:border-slate-500 transition-colors">

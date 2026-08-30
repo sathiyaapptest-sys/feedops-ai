@@ -454,4 +454,67 @@ export const api = {
     });
     return res.json();
   },
+  /** Inspects configured SSH keys on the backend server for Google SFTP feed delivery. */
+  getSftpKeyInfo: async (): Promise<{
+    status: 'configured' | 'not_found' | 'error';
+    key_path?: string;
+    public_key?: string | null;
+    has_private_key?: boolean;
+    message?: string;
+  }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/sftp/key-info`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
+  /** Generates a dedicated ED25519 SSH keypair on the backend server for Google SFTP feed delivery. */
+  generateSftpKey: async (): Promise<{
+    status: string;
+    key_path?: string;
+    public_key?: string;
+    message?: string;
+  }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/sftp/generate-key`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
+  /** Fetches recent system-wide audit & activity logs. */
+  getActivityLogs: async (limit: number = 100, category?: string): Promise<{
+    status: string;
+    logs: Array<{
+      log_id: string;
+      timestamp: string;
+      action: string;
+      actor: string;
+      status: 'success' | 'warning' | 'error' | 'info';
+      details: string;
+      metadata?: Record<string, any>;
+      duration_ms?: number;
+      category?: string;
+    }>;
+    total: number;
+  }> => {
+    const token = await getIdToken();
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (category && category !== 'All') query.append('category', category);
+    const res = await fetch(`${API_BASE_URL}/api/activity/logs?${query.toString()}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
+  /** Clears activity logs from Firestore. */
+  clearActivityLogs: async (): Promise<{ status: string; cleared_count: number }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/activity/clear`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
 };
+
+

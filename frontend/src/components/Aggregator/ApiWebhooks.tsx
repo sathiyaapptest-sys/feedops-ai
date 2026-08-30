@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { auth } from '../../lib/firebase';
-import { Settings, Loader2, CheckCircle2, UtensilsCrossed } from 'lucide-react';
+import { KeyRound, Loader2, CheckCircle2, UtensilsCrossed, Eye, EyeOff, Shield, Copy, Check, RefreshCw, Key } from 'lucide-react';
 
 interface ConfigForm {
   sftp_username_sandbox: string;
@@ -9,9 +9,6 @@ interface ConfigForm {
   conversion_partner_id: string;
   portal_status_sandbox: string;
   portal_status_production: string;
-  // Menu Feeds -- a separate, opt-in track (see onboarding/steps.ts's
-  // MENU_STEP_* tables and compute_menu_journey on the backend). Additive
-  // only: nothing above this comment changed.
   menu_feeds_enabled: boolean;
   generic_sftp_username_sandbox: string;
   generic_sftp_username_production: string;
@@ -38,14 +35,68 @@ export function ApiWebhooks() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
+  // SSH Key state
+  const [sftpKeyInfo, setSftpKeyInfo] = useState<{
+    status: 'configured' | 'not_found' | 'error';
+    key_path?: string;
+    public_key?: string | null;
+    has_private_key?: boolean;
+    message?: string;
+  } | null>(null);
+  const [keyLoading, setKeyLoading] = useState(false);
+  const [keyCopied, setKeyCopied] = useState(false);
+  const [generatingKey, setGeneratingKey] = useState(false);
+
+  // Field visibility states for privacy during screen recording / demos
+  const [showFields, setShowFields] = useState<Record<string, boolean>>({
+    sftp_username_sandbox: false,
+    sftp_username_production: false,
+    conversion_partner_id: false,
+    generic_sftp_username_sandbox: false,
+    generic_sftp_username_production: false,
+    ssh_public_key: false,
+  });
+
+  const toggleField = (field: string) => {
+    setShowFields((prev) => ({ ...prev, [field]: !prev[field] }));
+  };
+
+  const allMasked = !Object.values(showFields).some(Boolean);
+
+  const toggleMaskAll = () => {
+    const nextVal = allMasked;
+    setShowFields({
+      sftp_username_sandbox: nextVal,
+      sftp_username_production: nextVal,
+      conversion_partner_id: nextVal,
+      generic_sftp_username_sandbox: nextVal,
+      generic_sftp_username_production: nextVal,
+      ssh_public_key: nextVal,
+    });
+  };
+
+  const formatKeyPath = (p?: string) => {
+    if (!p) return '~/.ssh/google_actions_center';
+    if (p.includes('.ssh/')) {
+      return '~/.ssh/' + p.split('.ssh/').pop();
+    }
+    return p;
+  };
+
+  const loadKeyInfo = async () => {
+    setKeyLoading(true);
+    try {
+      const res = await api.getSftpKeyInfo();
+      setSftpKeyInfo(res);
+    } catch (e) {
+      console.error('Could not fetch SFTP key info', e);
+    } finally {
+      setKeyLoading(false);
+    }
+  };
+
   useEffect(() => {
     const load = async () => {
-      // auth.currentUser is synchronously null immediately after a fresh
-      // page load, until Firebase finishes restoring the persisted session --
-      // confirmed live: this page reported "Not signed in" on a direct
-      // navigation despite a genuinely active session (same race fixed in
-      // api.ts's getIdToken() this session, but this component reads
-      // auth.currentUser directly instead of going through that helper).
       await auth.authStateReady();
       const user = auth.currentUser;
       if (!user) {
@@ -59,10 +110,6 @@ export function ApiWebhooks() {
       try {
         let res = await api.getOrganization(id);
         if (res.status === 'error') {
-          // First visit -- this aggregator has no org record yet. There's no
-          // separate org-creation wizard in this app, so create one lazily,
-          // keyed by the aggregator's own uid (same self-service pattern
-          // merchants get keyed by email).
           const created = await api.createOrganization({
             org_id: id,
             org_type: 'aggregator',
@@ -73,11 +120,6 @@ export function ApiWebhooks() {
           res = await api.getOrganization(id);
           if (res.status === 'error') throw new Error(created.message || 'Could not create organization.');
         }
-        // update_organization_config writes portal_status_sandbox/production as
-        // flat keys inside `config` (not the top-level `portal_status` object
-        // /api/organizations POST seeds at creation) -- reading from `config`
-        // here so a value round-trips correctly after being saved via that
-        // same endpoint.
         const config = res.org?.config || {};
         setForm({
           sftp_username_sandbox: config.sftp_username_sandbox || '',
@@ -96,6 +138,7 @@ export function ApiWebhooks() {
       }
     };
     load();
+    loadKeyInfo();
   }, []);
 
   const handleSave = async () => {
@@ -114,19 +157,71 @@ export function ApiWebhooks() {
     }
   };
 
-  return (
-    <div className="max-w-2xl space-y-6">
-      <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-        <Settings className="w-6 h-6 text-blue-500" />
-        API &amp; Webhooks
-      </h1>
+  const handleCopyKey = () => {
+    if (sftpKeyInfo?.public_key) {
+      navigator.clipboard.writeText(sftpKeyInfo.public_key);
+      setKeyCopied(true);
+      setTimeout(() => setKeyCopied(false), 2000);
+    }
+  };
 
+  const handleGenerateKey = async () => {
+    setGeneratingKey(true);
+    try {
+      const res = await api.generateSftpKey();
+      if (res.status === 'success') {
+        await loadKeyInfo();
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setGeneratingKey(false);
+    }
+  };
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <KeyRound className="w-6 h-6 text-blue-500" />
+            Partner Portal Credentials &amp; Setup
+          </h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Google Actions Center relies on SFTP feeds and Conversion Tracking pings for Ordering Redirect.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={toggleMaskAll}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm"
+          title={allMasked ? "Reveal all credential fields" : "Mask all credential fields for screen recording"}
+        >
+          {allMasked ? (
+            <>
+              <Eye className="w-3.5 h-3.5 text-slate-500" />
+              <span>Show All Values</span>
+            </>
+          ) : (
+            <>
+              <EyeOff className="w-3.5 h-3.5 text-amber-500" />
+              <span>Hide All (Privacy Mode)</span>
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* Main Credentials Card */}
       <div className="p-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 space-y-6">
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          Partner Portal values FeedOps AI needs to deliver feeds and dispatch conversion pings on
-          your behalf -- find these under Partner Portal &rarr; Account and Users &rarr; Account tab.
-          {' '}<span className="font-medium">Not</span> the same as an SFTP password (never stored here).
-        </p>
+        <div className="flex items-start gap-2.5 p-3.5 bg-blue-50/70 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/40 rounded-lg">
+          <Shield className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+            Partner Portal values FeedOps AI needs to deliver feeds and dispatch conversion pings on your behalf — find these under <strong className="font-semibold text-slate-800 dark:text-slate-200">Partner Portal &rarr; Account and Users &rarr; Account tab</strong>.
+            SFTP SSH keys and passwords are never exposed or stored in plain text here.
+          </p>
+        </div>
 
         {loading ? (
           <div className="h-40 animate-pulse bg-slate-100 dark:bg-slate-700 rounded-lg" />
@@ -139,60 +234,112 @@ export function ApiWebhooks() {
             )}
             {saved && (
               <div className="p-3 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 rounded-lg text-sm flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4" /> Saved.
+                <CheckCircle2 className="w-4 h-4" /> Saved successfully.
               </div>
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* SFTP Sandbox */}
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-slate-900 dark:text-white">SFTP Username (sandbox)</label>
-                <input
-                  value={form.sftp_username_sandbox}
-                  onChange={(e) => setForm({ ...form, sftp_username_sandbox: e.target.value })}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white"
-                  placeholder="sandbox-username"
-                />
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-900 dark:text-white">SFTP Username (sandbox)</label>
+                  <button
+                    type="button"
+                    onClick={() => toggleField('sftp_username_sandbox')}
+                    className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center gap-1"
+                  >
+                    {showFields.sftp_username_sandbox ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showFields.sftp_username_sandbox ? 'Hide' : 'Show'}</span>
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showFields.sftp_username_sandbox ? 'text' : 'password'}
+                    value={form.sftp_username_sandbox}
+                    onChange={(e) => setForm({ ...form, sftp_username_sandbox: e.target.value })}
+                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white font-mono"
+                    placeholder="sandbox-username"
+                    autoComplete="off"
+                  />
+                </div>
               </div>
+
+              {/* SFTP Production */}
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-slate-900 dark:text-white">SFTP Username (production)</label>
-                <input
-                  value={form.sftp_username_production}
-                  onChange={(e) => setForm({ ...form, sftp_username_production: e.target.value })}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white"
-                  placeholder="production-username"
-                />
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-900 dark:text-white">SFTP Username (production)</label>
+                  <button
+                    type="button"
+                    onClick={() => toggleField('sftp_username_production')}
+                    className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center gap-1"
+                  >
+                    {showFields.sftp_username_production ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showFields.sftp_username_production ? 'Hide' : 'Show'}</span>
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showFields.sftp_username_production ? 'text' : 'password'}
+                    value={form.sftp_username_production}
+                    onChange={(e) => setForm({ ...form, sftp_username_production: e.target.value })}
+                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white font-mono"
+                    placeholder="production-username"
+                    autoComplete="off"
+                  />
+                </div>
               </div>
+
+              {/* Conversion Partner ID */}
               <div className="space-y-1.5 sm:col-span-2">
-                <label className="text-sm font-medium text-slate-900 dark:text-white">Conversion Partner ID</label>
-                <input
-                  value={form.conversion_partner_id}
-                  onChange={(e) => setForm({ ...form, conversion_partner_id: e.target.value })}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white"
-                  placeholder="numeric Partner/Aggregator ID"
-                />
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-900 dark:text-white">Conversion Partner ID</label>
+                  <button
+                    type="button"
+                    onClick={() => toggleField('conversion_partner_id')}
+                    className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center gap-1"
+                  >
+                    {showFields.conversion_partner_id ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showFields.conversion_partner_id ? 'Hide' : 'Show'}</span>
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showFields.conversion_partner_id ? 'text' : 'password'}
+                    value={form.conversion_partner_id}
+                    onChange={(e) => setForm({ ...form, conversion_partner_id: e.target.value })}
+                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white font-mono"
+                    placeholder="numeric Partner/Aggregator ID"
+                    autoComplete="off"
+                  />
+                </div>
               </div>
+
+              {/* Portal Status Sandbox */}
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-slate-900 dark:text-white">Portal Status (sandbox)</label>
                 <select
                   value={form.portal_status_sandbox}
                   onChange={(e) => setForm({ ...form, portal_status_sandbox: e.target.value })}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white"
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white capitalize"
                 >
                   {PORTAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
                 </select>
               </div>
+
+              {/* Portal Status Production */}
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-slate-900 dark:text-white">Portal Status (production)</label>
                 <select
                   value={form.portal_status_production}
                   onChange={(e) => setForm({ ...form, portal_status_production: e.target.value })}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white"
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white capitalize"
                 >
                   {PORTAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
                 </select>
               </div>
             </div>
 
+            {/* Menu Feeds Toggle */}
             <div className="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-4">
               <label className="flex items-start gap-3 cursor-pointer">
                 <input
@@ -204,12 +351,11 @@ export function ApiWebhooks() {
                 <span>
                   <span className="text-sm font-medium text-slate-900 dark:text-white flex items-center gap-1.5">
                     <UtensilsCrossed className="w-4 h-4 text-blue-500" />
-                    Also enable Menu Feeds
+                    Also enable Menu Feeds (Optional)
                   </span>
                   <span className="text-xs text-slate-500 dark:text-slate-400 block mt-0.5">
-                    A separate, optional onboarding track (google.food_menu) for restaurants that want their menu
-                    to show on Google Search/Maps -- not every aggregator needs this. Adds its own tracker card to
-                    the Dashboard once enabled.
+                    A separate track (<code className="font-mono text-slate-600 dark:text-slate-300">google.food_menu</code>) for restaurants that want their menu
+                    items to display directly on Google Search &amp; Maps.
                   </span>
                 </span>
               </label>
@@ -217,32 +363,56 @@ export function ApiWebhooks() {
               {form.menu_feeds_enabled && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pl-7">
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium text-slate-900 dark:text-white">Generic SFTP Username (sandbox)</label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium text-slate-900 dark:text-white">Generic SFTP (sandbox)</label>
+                      <button
+                        type="button"
+                        onClick={() => toggleField('generic_sftp_username_sandbox')}
+                        className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center gap-1"
+                      >
+                        {showFields.generic_sftp_username_sandbox ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        <span>{showFields.generic_sftp_username_sandbox ? 'Hide' : 'Show'}</span>
+                      </button>
+                    </div>
                     <input
+                      type={showFields.generic_sftp_username_sandbox ? 'text' : 'password'}
                       value={form.generic_sftp_username_sandbox}
                       onChange={(e) => setForm({ ...form, generic_sftp_username_sandbox: e.target.value })}
-                      className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white"
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white font-mono"
                       placeholder="generic-sandbox-username"
+                      autoComplete="off"
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium text-slate-900 dark:text-white">Generic SFTP Username (production)</label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium text-slate-900 dark:text-white">Generic SFTP (production)</label>
+                      <button
+                        type="button"
+                        onClick={() => toggleField('generic_sftp_username_production')}
+                        className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center gap-1"
+                      >
+                        {showFields.generic_sftp_username_production ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        <span>{showFields.generic_sftp_username_production ? 'Hide' : 'Show'}</span>
+                      </button>
+                    </div>
                     <input
+                      type={showFields.generic_sftp_username_production ? 'text' : 'password'}
                       value={form.generic_sftp_username_production}
                       onChange={(e) => setForm({ ...form, generic_sftp_username_production: e.target.value })}
-                      className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white"
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white font-mono"
                       placeholder="generic-production-username"
+                      autoComplete="off"
                     />
                   </div>
                 </div>
               )}
             </div>
 
-            <div className="flex justify-end">
+            <div className="flex justify-end pt-2">
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg flex items-center gap-2"
+                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg flex items-center gap-2 shadow-sm transition-colors"
               >
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                 Save Configuration
@@ -251,6 +421,111 @@ export function ApiWebhooks() {
           </>
         )}
       </div>
+
+      {/* SSH Public Key for Google Partner Portal Card */}
+      <div className="p-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Key className="w-5 h-5 text-indigo-500" />
+            <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+              SSH Public Key for Google Partner Portal
+            </h2>
+          </div>
+          <div className="flex items-center gap-2">
+            {sftpKeyInfo?.public_key && (
+              <button
+                type="button"
+                onClick={() => toggleField('ssh_public_key')}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600"
+              >
+                {showFields.ssh_public_key ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                <span>{showFields.ssh_public_key ? 'Hide Key' : 'Show Key'}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleGenerateKey}
+              disabled={generatingKey}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm disabled:opacity-50"
+            >
+              {generatingKey ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 text-slate-500" />}
+              <span>Generate Dedicated Key</span>
+            </button>
+          </div>
+        </div>
+
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          To authenticate SFTP feed uploads with Google, copy this <strong>Public Key</strong> and register it in Google Partner Portal.
+        </p>
+
+        {keyLoading ? (
+          <div className="h-20 animate-pulse bg-slate-100 dark:bg-slate-700 rounded-lg" />
+        ) : sftpKeyInfo?.public_key ? (
+          <div className="space-y-3">
+            <div className="relative group">
+              <pre className="p-3.5 bg-slate-900 text-slate-100 rounded-lg text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all border border-slate-800 selection:bg-blue-600 selection:text-white">
+                {showFields.ssh_public_key
+                  ? sftpKeyInfo.public_key
+                  : 'ssh-rsa •••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••• (Masked for privacy)'}
+              </pre>
+              <button
+                type="button"
+                onClick={handleCopyKey}
+                className="absolute top-2.5 right-2.5 px-2.5 py-1 text-xs font-medium rounded bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-1 shadow transition-colors"
+                title="Copy Public Key to clipboard"
+              >
+                {keyCopied ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy Key</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span>Server Key Path: <code className="font-mono text-slate-700 dark:text-slate-300 font-semibold">{formatKeyPath(sftpKeyInfo.key_path)}</code></span>
+              <span className="text-green-600 dark:text-green-400 flex items-center gap-1 font-medium">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Private key ready on server
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-lg flex items-center justify-between">
+            <div className="text-xs text-amber-800 dark:text-amber-300">
+              No SSH key found yet. Click <strong>Generate Dedicated Key</strong> to create a secure ED25519 key pair automatically.
+            </div>
+            <button
+              type="button"
+              onClick={handleGenerateKey}
+              disabled={generatingKey}
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium rounded-md flex items-center gap-1.5"
+            >
+              {generatingKey ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Key className="w-3.5 h-3.5" />}
+              <span>Generate Key Pair</span>
+            </button>
+          </div>
+        )}
+
+        {/* 3-Step Guide */}
+        <div className="pt-3 border-t border-slate-100 dark:border-slate-700/60">
+          <h3 className="text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wider">
+            Quick Partner Portal Registration Steps:
+          </h3>
+          <ol className="text-xs text-slate-600 dark:text-slate-400 space-y-1.5 list-decimal list-inside leading-relaxed">
+            <li>Click <strong>Copy Key</strong> above to copy your public key string (works even when masked).</li>
+            <li>Sign in to <span className="font-medium text-slate-800 dark:text-slate-200">Google Actions Center Partner Portal</span> &rarr; go to <strong>Account and Users</strong> &rarr; <strong>Account</strong> tab.</li>
+            <li>Paste into the <strong>SSH Keys</strong> field and save. Google will assign your sandbox/production <strong>SFTP Username</strong>.</li>
+          </ol>
+        </div>
+      </div>
     </div>
   );
 }
+
+

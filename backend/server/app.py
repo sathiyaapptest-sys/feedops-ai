@@ -16,6 +16,11 @@ import shutil
 import tempfile
 from pydantic import BaseModel
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(name)s -> %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger("feedops.server")
 from backend.tools.menu_extractor import ImageMenuExtractor
 from backend.tools.excel_parser import SpreadsheetFeedParser
@@ -31,7 +36,7 @@ from backend.db.firestore_client import (
     STATUS_NO_LISTING, STATUS_APPROVED, STATUS_REJECTED, STATUS_EXCLUDED_CLOSED,
     OrganizationRepository, ORG_TYPE_MERCHANT, ORG_TYPE_AGGREGATOR, PORTAL_STATUS_NOT_STARTED,
     UploadBatchRepository, VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS,
-    MenuRepository, ConversionCheckRepository,
+    MenuRepository, ConversionCheckRepository, ActivityLogRepository,
 )
 from backend.jobs.scheduled_tasks import run_daily_feed_push, run_weekly_conversion_sweep
 from backend.jobs.menu_feed_push import run_menu_feed_push
@@ -46,6 +51,54 @@ def get_orchestrator() -> FeedOpsOrchestrator:
     if _orchestrator is None:
         _orchestrator = FeedOpsOrchestrator()
     return _orchestrator
+
+
+def log_activity(
+    action: str,
+    actor: Optional[str] = "system",
+    status: str = "success",
+    details: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+    duration_ms: Optional[float] = None,
+    category: Optional[str] = None,
+):
+    """
+    Dual-layer structured audit & activity logger:
+    1. Outputs clean human-readable and structured JSON logs to terminal stdout -> auto-ingested by Cloud Logging.
+    2. Persists to Firestore `activity_logs` collection -> rendered in the UI Activity Log viewer.
+    """
+    actor_str = actor or "system"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    log_entry = {
+        "timestamp": now_iso,
+        "action": action,
+        "actor": actor_str,
+        "status": status,
+        "details": details,
+        "duration_ms": duration_ms or 0.0,
+        "metadata": metadata or {},
+    }
+    
+    # 1. Print formatted line in terminal
+    dur_str = f" ({round(duration_ms)}ms)" if duration_ms else ""
+    logger.info(f"⚡ [ACTIVITY] [{action}] [{status.upper()}] by {actor_str}: {details}{dur_str}")
+    logger.info(f"[FEEDOPS_ACTIVITY] {json.dumps(log_entry)}")
+    
+    # 2. Persist to Firestore
+    try:
+        ActivityLogRepository().record(
+            action=action,
+            actor=actor_str,
+            status=status,
+            details=details,
+            metadata=metadata,
+            duration_ms=duration_ms,
+            category=category,
+        )
+    except Exception as e:
+        logger.warning(f"Could not persist activity log: {e}")
+
+
 
 # Enable CORS for Vite dev server
 app.add_middleware(
@@ -167,7 +220,153 @@ async def update_organization_config(
     config = {k: v for k, v in payload.model_dump().items() if v is not None}
     try:
         await asyncio.to_thread(OrganizationRepository().update_config, org_id, config)
+        log_activity(
+            "CONFIG_UPDATE",
+            actor=current_user.get("email"),
+            status="success",
+            details=f"Saved Partner Portal credentials for org '{org_id}' ({', '.join(config.keys())})",
+            metadata={"org_id": org_id, "keys": list(config.keys())},
+            category="System",
+        )
         return {"status": "updated", "config": config}
+    except Exception as e:
+        log_activity(
+            "CONFIG_UPDATE_FAILED",
+            actor=current_user.get("email"),
+            status="error",
+            details=f"Failed to save credentials for org '{org_id}': {str(e)}",
+            category="System",
+        )
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/activity/logs")
+async def get_activity_logs(
+    limit: int = 100,
+    category: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Retrieves recent system-wide audit and activity logs across all actions."""
+    repo = ActivityLogRepository()
+    logs = await asyncio.to_thread(repo.list_recent, limit, category)
+    return {"status": "ok", "logs": logs, "total": len(logs)}
+
+
+@app.post("/api/activity/clear")
+async def clear_activity_logs(current_user: dict = Depends(get_current_user)):
+    """Clears activity logs from Firestore."""
+    repo = ActivityLogRepository()
+    cleared = await asyncio.to_thread(repo.clear_all)
+    log_activity(
+        "ACTIVITY_LOGS_PURGED",
+        actor=current_user.get("email"),
+        status="warning",
+        details=f"Purged {cleared} activity log records from Firestore",
+        metadata={"cleared_count": cleared},
+        category="System",
+    )
+    return {"status": "success", "cleared_count": cleared}
+
+
+
+@app.get("/api/sftp/key-info")
+async def get_sftp_key_info(current_user: dict = Depends(get_current_user)):
+    """Inspects configured SSH keys for Google SFTP feed delivery."""
+    candidates = [
+        os.getenv("GOOGLE_SFTP_KEY_PATH"),
+        os.path.expanduser("~/.ssh/google_actions_center"),
+        os.path.expanduser("~/.ssh/id_ed25519"),
+        os.path.expanduser("~/.ssh/id_rsa"),
+    ]
+    candidates = [c for c in candidates if c]
+    
+    found_key_path = None
+    pub_key_str = None
+    
+    for path in candidates:
+        exp_path = os.path.expanduser(path)
+        if os.path.exists(exp_path):
+            pub_path = exp_path + ".pub"
+            if os.path.exists(pub_path):
+                try:
+                    with open(pub_path, "r") as f:
+                        content = f.read().strip()
+                        if content:
+                            pub_key_str = content
+                            found_key_path = exp_path
+                            break
+                except Exception:
+                    pass
+            if not pub_key_str:
+                try:
+                    from cryptography.hazmat.primitives import serialization
+                    with open(exp_path, "rb") as f:
+                        priv = serialization.load_ssh_private_key(f.read(), password=None)
+                        pub_key_str = priv.public_key().public_bytes(
+                            encoding=serialization.Encoding.OpenSSH,
+                            format=serialization.PublicFormat.OpenSSH
+                        ).decode("utf-8") + f" feedops@{os.uname().nodename}"
+                        found_key_path = exp_path
+                        break
+                except Exception:
+                    pass
+
+    if found_key_path and pub_key_str:
+        return {
+            "status": "configured",
+            "key_path": found_key_path,
+            "public_key": pub_key_str,
+            "has_private_key": True,
+        }
+    
+    return {
+        "status": "not_found",
+        "key_path": os.getenv("GOOGLE_SFTP_KEY_PATH") or os.path.expanduser("~/.ssh/google_actions_center"),
+        "public_key": None,
+        "has_private_key": False,
+    }
+
+
+@app.post("/api/sftp/generate-key")
+async def generate_sftp_key(current_user: dict = Depends(get_current_user)):
+    """Generates a dedicated ED25519 SSH keypair for Google Actions Center SFTP uploads."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from cryptography.hazmat.primitives import serialization
+
+        key_dir = os.path.expanduser("~/.ssh")
+        os.makedirs(key_dir, exist_ok=True, mode=0o700)
+        priv_path = os.path.join(key_dir, "google_actions_center")
+        pub_path = priv_path + ".pub"
+
+        priv = ed25519.Ed25519PrivateKey.generate()
+        priv_bytes = priv.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.OpenSSH,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        pub_bytes = priv.public_key().public_bytes(
+            encoding=serialization.Encoding.OpenSSH,
+            format=serialization.PublicFormat.OpenSSH
+        )
+
+        with open(priv_path, "wb") as f:
+            f.write(priv_bytes)
+        os.chmod(priv_path, 0o600)
+
+        pub_str = f"{pub_bytes.decode('utf-8')} feedops-ai@google-actions-center"
+        with open(pub_path, "w") as f:
+            f.write(pub_str + "\n")
+        os.chmod(pub_path, 0o644)
+
+        os.environ["GOOGLE_SFTP_KEY_PATH"] = priv_path
+
+        return {
+            "status": "success",
+            "message": "Generated dedicated ED25519 SSH key pair.",
+            "key_path": priv_path,
+            "public_key": pub_str,
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -380,7 +579,7 @@ async def get_triage_queue():
         return {"queue": [], "error": str(e)}
 
 @app.post("/api/triage/resolve")
-async def resolve_triage(request: Request):
+async def resolve_triage(request: Request, current_user: dict = Depends(get_current_user)):
     """
     Accepts manual approval or rejection for an entity match. An approve may
     optionally carry a corrected `address` the reviewer typed after visually
@@ -397,8 +596,23 @@ async def resolve_triage(request: Request):
     try:
         extra = {"address": corrected_address, "confidence": 1.0} if (action == "approve" and corrected_address) else None
         await asyncio.to_thread(MerchantRepository().update_status, merchant_id, status, extra)
+        log_activity(
+            "TRIAGE_RESOLVED",
+            actor=current_user.get("email"),
+            status="success",
+            details=f"Human-in-the-Loop decision: {action.upper()} for '{merchant_id}'" + (f" (address updated: {corrected_address})" if corrected_address else ""),
+            metadata={"merchant_id": merchant_id, "action": action, "corrected_address": corrected_address},
+            category="Merchants & Places",
+        )
         return {"status": "resolved", "id": merchant_id, "action": action}
     except Exception as e:
+        log_activity(
+            "TRIAGE_RESOLUTION_FAILED",
+            actor=current_user.get("email"),
+            status="error",
+            details=f"Failed to resolve triage for '{merchant_id}': {str(e)}",
+            category="Merchants & Places",
+        )
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/feeds/readiness")
@@ -419,7 +633,7 @@ async def feeds_readiness():
         return {"score": 0, "status": "Unavailable", "metrics": {}, "error": str(e)}
 
 @app.post("/api/feeds/trigger-pipeline")
-async def trigger_pipeline(environment: str = "sandbox"):
+async def trigger_pipeline(environment: str = "sandbox", current_user: dict = Depends(get_current_user)):
     """
     Runs the real daily feed push (closed-merchant guard, compile, SFTP upload) on
     demand. allow_fixture_fallback=False -- unlike the scheduled Cloud Run Job, an
@@ -429,10 +643,28 @@ async def trigger_pipeline(environment: str = "sandbox"):
     """
     if environment not in ("sandbox", "production"):
         return {"ok": False, "error": f"environment must be 'sandbox' or 'production', got '{environment}'."}
-    # run_daily_feed_push is a synchronous CLI job entrypoint that manages its own
-    # event loop internally (asyncio.run); to_thread keeps that safe to call from
-    # inside FastAPI's already-running event loop.
+    
+    t0 = datetime.now(timezone.utc)
     summary = await asyncio.to_thread(run_daily_feed_push, environment, allow_fixture_fallback=False)
+    duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+    
+    is_ok = summary.get("ok", False)
+    upload_info = summary.get("upload") or {}
+    log_activity(
+        "FEED_PUSH_TRIGGERED",
+        actor=current_user.get("email"),
+        status="success" if is_ok else "warning",
+        details=f"Compiled and pushed {environment} feeds (entities: {summary.get('merchants_compiled', 0)}, dry_run={upload_info.get('dry_run')})",
+        metadata={
+            "environment": environment,
+            "merchants_compiled": summary.get("merchants_compiled", 0),
+            "excluded_closed": summary.get("excluded_closed", 0),
+            "upload_status": upload_info.get("status"),
+            "files_count": len(summary.get("bundle") or {}),
+        },
+        duration_ms=duration_ms,
+        category="Feeds & SFTP",
+    )
     return summary
 
 @app.get("/api/batches")
@@ -455,30 +687,18 @@ def _read_feed_file(path: str) -> Any:
 
 @app.get("/api/batches/{batch_id}/feed-content")
 async def get_batch_feed_content(batch_id: str):
-    """
-    Reads the actual compiled entity/action/service (or menu, for a Menu Feed
-    batch) feed rows for a batch, for the same "preview what would be sent to
-    Google" toggle Services.tsx already
-    gives merchants. Unlike the merchant-side SchemaAuditor (which returns
-    compiled content directly), ActionsCenterFeedCompiler writes each feed to a
-    local JSON file and only stores the file PATH on the batch document -- so
-    this only works while the same server instance that ran the push is still
-    alive with that file on disk (fine for this app's current in-process
-    "Upload Now" flow; a real distributed deployment running the daily push as
-    a separate Cloud Run Job would need real storage instead, not local disk).
-    Missing files are reported per feed type rather than failing the whole request.
-    """
     try:
         batch = await asyncio.to_thread(UploadBatchRepository().get, batch_id)
         if not batch:
             return {"status": "error", "message": "Batch not found."}
 
-        feed_files = batch.get("feed_files") or {}
+        bundle = batch.get("bundle", {})
         feeds: Dict[str, Any] = {}
         missing: List[str] = []
-        for feed_type in ("entity", "action", "service", "menu"):
-            path = feed_files.get(feed_type)
-            if not path:
+
+        for feed_type, path in bundle.items():
+            if not os.path.exists(path):
+                missing.append(feed_type)
                 continue
             try:
                 feeds[feed_type] = await asyncio.to_thread(_read_feed_file, path)
@@ -520,6 +740,14 @@ async def verify_batch_feed(batch_id: str, payload: FeedVerifyIn, current_user: 
     try:
         verified_by = current_user.get("email") or current_user.get("uid", "unknown")
         await asyncio.to_thread(UploadBatchRepository().mark_feed_status, batch_id, payload.feed_type, payload.status, verified_by)
+        log_activity(
+            "FEED_STATUS_VERIFIED",
+            actor=verified_by,
+            status="success" if payload.status == VERIFICATION_CONFIRMED_CLEAN else "warning",
+            details=f"Partner Portal verification: {payload.feed_type.upper()} marked '{payload.status}' for batch {batch_id}",
+            metadata={"batch_id": batch_id, "feed_type": payload.feed_type, "status": payload.status},
+            category="Feeds & SFTP",
+        )
         return {"status": "recorded", "batch_id": batch_id, "feed_type": payload.feed_type, "feed_status": payload.status}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -531,18 +759,7 @@ CONVERSION_COMPLIANCE_WINDOW_DAYS = 7
 async def trigger_conversion_check(environment: str = "sandbox", current_user: dict = Depends(get_current_user)):
     """
     Runs the real synthetic conversion sweep (playbook section 7) on demand,
-    for an aggregator to submit outside the weekly scheduled cadence. Uses the
-    numeric Conversion Partner ID the aggregator saved in their own org config
-    (API & Webhooks) if they've set one, falling back to the
-    GOOGLE_CONVERSION_PARTNER_ID env var otherwise (what the scheduled Cloud
-    Run Job uses, which has no per-org context).
-
-    Unlike run_daily_feed_push (which never raises -- every internal failure
-    is individually caught and folded into its summary dict),
-    dispatch_conversion_ping raises outright when no partner id is available
-    from either source, a real and expected setup gap before an aggregator has
-    filled in API & Webhooks -- caught here so that shows up as a clear error
-    the frontend can render, not a raw connection failure.
+    for an aggregator to submit outside the weekly scheduled cadence.
     """
     partner_id = None
     org_id = current_user.get("uid")
@@ -553,10 +770,32 @@ async def trigger_conversion_check(environment: str = "sandbox", current_user: d
         except Exception as e:
             logger.warning(f"Could not load org config for '{org_id}': {e}")
 
+    t0 = datetime.now(timezone.utc)
     try:
         summary = await asyncio.to_thread(run_weekly_conversion_sweep, environment, partner_id)
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        pings = summary.get("checks", [])
+        log_activity(
+            "CONVERSION_PING_DISPATCHED",
+            actor=current_user.get("email"),
+            status="success" if summary.get("all_ok") else "warning",
+            details=f"Dispatched {len(pings)} conversion ping(s) to Google {environment} (partner_id: {partner_id or 'default'})",
+            metadata={"environment": environment, "partner_id": partner_id, "checks_count": len(pings)},
+            duration_ms=duration_ms,
+            category="Conversion",
+        )
         return summary
     except Exception as e:
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "CONVERSION_PING_FAILED",
+            actor=current_user.get("email"),
+            status="error",
+            details=f"Conversion ping failed for {environment}: {str(e)}",
+            metadata={"environment": environment, "partner_id": partner_id},
+            duration_ms=duration_ms,
+            category="Conversion",
+        )
         return {"all_ok": False, "tokens_pinged": 0, "successful_pings": 0, "error": str(e)}
 
 @app.get("/api/conversion/checks")
@@ -710,10 +949,10 @@ async def search_places(query: str):
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/upload/menu-image")
-async def upload_menu_image(file: UploadFile = File(...)):
+async def upload_menu_image(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     """Accepts multipart/form-data image and returns extracted JSON."""
+    t0 = datetime.now(timezone.utc)
     try:
-        # Create a temporary file
         fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
         with os.fdopen(fd, 'wb') as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -721,21 +960,35 @@ async def upload_menu_image(file: UploadFile = File(...)):
         extractor = ImageMenuExtractor()
         data = extractor.extract_from_file(temp_path)
         os.remove(temp_path)
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        items = data.items if hasattr(data, "items") else []
+        log_activity(
+            "MENU_IMAGE_OCR_EXTRACT",
+            actor=current_user.get("email"),
+            status="success",
+            details=f"Gemini Vision OCR extracted {len(items)} menu items from '{file.filename}'",
+            metadata={"filename": file.filename, "extracted_count": len(items)},
+            duration_ms=duration_ms,
+            category="Menu & Vision",
+        )
         return {"status": "success", "data": data.model_dump()}
     except Exception as e:
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "MENU_IMAGE_OCR_FAILED",
+            actor=current_user.get("email"),
+            status="error",
+            details=f"Gemini Vision OCR failed for '{file.filename}': {str(e)}",
+            metadata={"filename": file.filename},
+            duration_ms=duration_ms,
+            category="Menu & Vision",
+        )
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/upload/feed-screenshot")
-async def upload_feed_screenshot(file: UploadFile = File(...)):
-    """
-    Accepts a screenshot of Google's Partner Portal and returns a
-    plain-language explanation plus, only for the Ingestion History screen
-    type, advisory per-feed accept/reject suggestions. This never writes
-    feed status itself -- the caller (FeedStatus.tsx) still routes any
-    suggestion through the existing Mark Accepted/Rejected buttons for a
-    human to confirm.
-    """
+async def upload_feed_screenshot(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     temp_path = None
+    t0 = datetime.now(timezone.utc)
     try:
         fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
         with os.fdopen(fd, 'wb') as buffer:
@@ -743,8 +996,28 @@ async def upload_feed_screenshot(file: UploadFile = File(...)):
 
         analyzer = FeedScreenshotAnalyzer()
         data = analyzer.analyze_from_file(temp_path)
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "FEED_SCREENSHOT_ANALYZED",
+            actor=current_user.get("email"),
+            status="success",
+            details=f"Gemini Vision analyzed Partner Portal screenshot '{file.filename}'",
+            metadata={"filename": file.filename, "screen_type": getattr(data, "screen_type", "unknown")},
+            duration_ms=duration_ms,
+            category="Feeds & SFTP",
+        )
         return {"status": "success", "data": data.model_dump()}
     except Exception as e:
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "FEED_SCREENSHOT_FAILED",
+            actor=current_user.get("email"),
+            status="error",
+            details=f"Screenshot analysis failed: {str(e)}",
+            metadata={"filename": file.filename},
+            duration_ms=duration_ms,
+            category="Feeds & SFTP",
+        )
         return {"status": "error", "message": str(e)}
     finally:
         if temp_path and os.path.exists(temp_path):
@@ -752,14 +1025,6 @@ async def upload_feed_screenshot(file: UploadFile = File(...)):
 
 @app.post("/api/entity-match/assist")
 async def entity_match_assist(file: UploadFile = File(...), org_id: Optional[str] = Form(None)):
-    """
-    Accepts Google's Entity-match CSV export and suggests a Google Maps URL
-    for each unmatched/disabled entity, reusing the existing Places-matching
-    engine (resolve_entity_match) and any place_id already stored from prior
-    onboarding. Suggestions only -- there's no API to push a match back to
-    Google, so the human still pastes the URL into Google's Edit match
-    screen themselves.
-    """
     try:
         parsed = parse_entity_csv(file.file)
         result = await suggest_matches(parsed["rows"], org_id)
@@ -773,15 +1038,6 @@ async def entity_match_assist(file: UploadFile = File(...), org_id: Optional[str
         return {"status": "error", "message": str(e)}
 
 async def _persist_bulk_merchant(merchant: Dict[str, Any], org_id: str) -> Dict[str, Any]:
-    """
-    Bulk upload's per-row equivalent of the single-merchant onboarding
-    pipeline's _persist_merchant: a deterministic Places match (no LLM
-    narration -- this can run over many rows in one request, so it uses the
-    same cheap baseline EntityMatcherAgent itself falls back to, not a Gemini
-    call per row) followed by a real Firestore write. Without this, bulk
-    upload only validated rows and handed them back to the browser -- they
-    never reached the triage queue, readiness scorecard, or daily feed push.
-    """
     store_id = slugify_store_id(org_id, merchant["name"])
     try:
         match = await resolve_entity_match(merchant["name"], merchant["address"])
@@ -817,34 +1073,9 @@ async def upload_spreadsheet(
     file: UploadFile = File(...),
     org_id: Optional[str] = Form(None),
     replace_existing: bool = Form(False),
+    current_user: dict = Depends(get_current_user),
 ):
-    """
-    Accepts multipart/form-data Excel/CSV of restaurant/merchant rows, validates
-    it, and persists every valid row the same way single-merchant onboarding
-    does -- a deterministic Places match plus a real `merchants` collection
-    write -- so bulk-uploaded merchants actually reach the triage queue,
-    readiness scorecard, and daily feed push, not just a parsed preview shown
-    once in the browser.
-
-    Menu items are a separate upload now (POST /api/upload/menu-spreadsheet) --
-    they used to ride along as a second sheet of the same workbook, which forced
-    every aggregator into one specific file shape and meant a menu-only
-    re-upload had to carry merchant rows too, even though the two data sources
-    are frequently entirely different exports in practice.
-
-    With org_id: loads that organization's saved column-mapping adapter (remembered
-    from a previous upload) or infers and saves one, and rows that fail required-field
-    validation come back in `errors` instead of being silently dropped or guessed at
-    (and are never persisted).
-
-    replace_existing=true turns this into a full roster refresh: any of this
-    org's merchants NOT present in this file get soft-removed (see
-    remove_merchant) rather than a normal upload's merge-only upsert. Guarded
-    to only fire when at least one row from this file actually persisted --
-    an empty or fully-invalid file must never wipe an existing roster. Merchants
-    are a Firestore collection shared across orgs, so this only ever touches
-    rows whose stored org_id matches this upload's -- never another org's data.
-    """
+    t0 = datetime.now(timezone.utc)
     try:
         fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
         with os.fdopen(fd, 'wb') as buffer:
@@ -858,7 +1089,7 @@ async def upload_spreadsheet(
 
         persisted: List[Dict[str, Any]] = []
         if merchants:
-            effective_org_id = org_id or "unknown"
+            effective_org_id = org_id or current_user.get("uid") or "unknown"
             results = await asyncio.gather(
                 *[_persist_bulk_merchant(m, effective_org_id) for m in merchants],
                 return_exceptions=True,
@@ -871,7 +1102,7 @@ async def upload_spreadsheet(
 
         removed_count = 0
         if persisted and replace_existing:
-            effective_org_id = org_id or "unknown"
+            effective_org_id = org_id or current_user.get("uid") or "unknown"
             kept_store_ids = {p["store_id"] for p in persisted}
             existing = await asyncio.to_thread(MerchantRepository().list_all)
             stale = [
@@ -886,6 +1117,23 @@ async def upload_spreadsheet(
             )
             removed_count = len(stale)
 
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "BULK_MERCHANT_UPLOAD",
+            actor=current_user.get("email"),
+            status="success",
+            details=f"Bulk upload '{file.filename}': {len(persisted)} stores persisted to Firestore (errors: {len(data.get('errors', []))})",
+            metadata={
+                "filename": file.filename,
+                "parsed_count": len(merchants),
+                "persisted_count": len(persisted),
+                "removed_count": removed_count,
+                "error_count": len(data.get("errors", [])),
+            },
+            duration_ms=duration_ms,
+            category="Merchants & Places",
+        )
+
         return {
             "status": "success",
             "merchants_count": len(merchants),
@@ -897,30 +1145,32 @@ async def upload_spreadsheet(
             "data": {"merchants": merchants},
         }
     except Exception as e:
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "BULK_MERCHANT_UPLOAD_FAILED",
+            actor=current_user.get("email"),
+            status="error",
+            details=f"Bulk upload failed for '{file.filename}': {str(e)}",
+            metadata={"filename": file.filename},
+            duration_ms=duration_ms,
+            category="Merchants & Places",
+        )
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/upload/menu-spreadsheet")
-async def upload_menu_spreadsheet(file: UploadFile = File(...), org_id: Optional[str] = Form(None)):
-    """
-    Accepts multipart/form-data Excel/CSV of menu item rows -- one row per dish,
-    identified by a merchant-name column -- and persists them into the same
-    `menus/{store_id}` documents Menu.tsx's own self-service editor reads and
-    writes. Each row's store_id is computed the identical way the restaurant
-    upload's does (slugify_store_id(org_id, merchant_name)), so items land on
-    the same merchant a restaurant upload for that name already created, or
-    will if uploaded afterward -- order between the two uploads doesn't matter.
-
-    Previously, a spreadsheet's menu sheet was parsed and counted in the
-    response but never written anywhere -- this endpoint is what that data
-    was missing.
-    """
+async def upload_menu_spreadsheet(
+    file: UploadFile = File(...),
+    org_id: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
+):
+    t0 = datetime.now(timezone.utc)
     try:
         fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
         with os.fdopen(fd, 'wb') as buffer:
             shutil.copyfileobj(file.file, buffer)
 
         parser = SpreadsheetFeedParser()
-        effective_org_id = org_id or "unknown"
+        effective_org_id = org_id or current_user.get("uid") or "unknown"
         data = await asyncio.to_thread(parser.parse_menu, temp_path, org_id=effective_org_id)
         os.remove(temp_path)
 
@@ -941,6 +1191,17 @@ async def upload_menu_spreadsheet(file: UploadFile = File(...), org_id: Optional
             except Exception as e:
                 logger.warning(f"Could not persist bulk menu items for '{store_id}': {e}")
 
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "BULK_MENU_UPLOAD",
+            actor=current_user.get("email"),
+            status="success",
+            details=f"Bulk menu upload '{file.filename}': {len(items)} dishes across {len(by_store)} stores",
+            metadata={"filename": file.filename, "items_count": len(items), "stores_count": len(by_store)},
+            duration_ms=duration_ms,
+            category="Menu & Vision",
+        )
+
         return {
             "status": "success",
             "items_count": len(items),
@@ -948,25 +1209,52 @@ async def upload_menu_spreadsheet(file: UploadFile = File(...), org_id: Optional
             "errors": data["errors"],
         }
     except Exception as e:
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "BULK_MENU_UPLOAD_FAILED",
+            actor=current_user.get("email"),
+            status="error",
+            details=f"Bulk menu upload failed for '{file.filename}': {str(e)}",
+            metadata={"filename": file.filename},
+            duration_ms=duration_ms,
+            category="Menu & Vision",
+        )
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/menus/clear-all")
-async def clear_all_menus():
+async def clear_all_menus(current_user: dict = Depends(get_current_user)):
     """Purges all uploaded menu documents from Firestore."""
     try:
         count = await asyncio.to_thread(MenuRepository().clear_all)
+        log_activity(
+            "CLEAR_ALL_MENUS",
+            actor=current_user.get("email"),
+            status="warning",
+            details=f"Purged {count} menu documents from Firestore",
+            metadata={"cleared_count": count},
+            category="Menu & Vision",
+        )
         return {"status": "success", "cleared_count": count, "message": f"Cleared {count} menu documents."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/merchants/clear-all")
-async def clear_all_merchants():
+async def clear_all_merchants(current_user: dict = Depends(get_current_user)):
     """Purges all merchant records from Firestore."""
     try:
         count = await asyncio.to_thread(MerchantRepository().clear_all)
+        log_activity(
+            "CLEAR_ALL_MERCHANTS",
+            actor=current_user.get("email"),
+            status="warning",
+            details=f"Purged {count} merchant records from Firestore",
+            metadata={"cleared_count": count},
+            category="Merchants & Places",
+        )
         return {"status": "success", "cleared_count": count, "message": f"Cleared {count} merchant records."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
 
 class SPAStaticFiles(StaticFiles):
     """StaticFiles(html=True) only auto-serves index.html for the root path,

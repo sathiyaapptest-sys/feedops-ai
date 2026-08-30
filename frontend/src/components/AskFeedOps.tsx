@@ -34,6 +34,16 @@ export const AskFeedOps: React.FC = () => {
     {
       step: 'Step 2: Merchants',
       category: 'Roster & Places',
+      question: "What fields are required and optional for bulk restaurant roster CSV/Excel upload?",
+    },
+    {
+      step: 'Step 2: Merchants',
+      category: 'Roster & Places',
+      question: "What are the formatting rules for bulk restaurant data (E.164 phone, lead times, service types)?",
+    },
+    {
+      step: 'Step 2: Merchants',
+      category: 'Roster & Places',
       question: "Why must we upload the restaurant list and verify them against Google Places before pushing feeds?",
     },
     {
@@ -178,16 +188,16 @@ export const AskFeedOps: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full flex flex-col">
-      {/* Flush Sticky Header */}
-      <div className="sticky top-0 z-30 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm">
-        <div className="max-w-7xl mx-auto px-6 md:px-8 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
-              <HelpCircle className="w-5 h-5" />
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-lg">
+              <HelpCircle className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-slate-900 dark:text-white">Ask FeedOps</h1>
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Ask FeedOps</h1>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 RAG-grounded support agent answering directly from Google Actions Center playbooks and proto specs.
               </p>
@@ -196,11 +206,10 @@ export const AskFeedOps: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="max-w-7xl w-full mx-auto px-6 md:px-8 py-6 md:py-8 space-y-6 pb-16">
-        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 md:p-8 flex flex-col gap-6">
-          
-          {/* Top 20 Clickable FAQs */}
+      {/* Main Content Card */}
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 flex flex-col gap-6">
+        {/* Top 20 Clickable FAQs */}
+
           <div className="space-y-3.5">
             <div className="flex items-center justify-between">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
@@ -308,6 +317,6 @@ export const AskFeedOps: React.FC = () => {
           )}
         </div>
       </div>
-    </div>
   );
 };
+

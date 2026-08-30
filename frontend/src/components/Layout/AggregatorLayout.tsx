@@ -1,13 +1,15 @@
 import { Outlet, useNavigate, NavLink } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth } from '../../lib/firebase';
-import { LogOut, LayoutDashboard, Layers, HelpCircle } from 'lucide-react';
+import { LogOut, LayoutDashboard, Layers, HelpCircle, Activity } from 'lucide-react';
 
 const NAV_ITEMS = [
   { to: '/aggregator/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/aggregator/merchants', label: 'Merchants', icon: Layers },
+  { to: '/aggregator/activity', label: 'Activity Logs', icon: Activity },
   { to: '/aggregator/ask', label: 'Ask FeedOps', icon: HelpCircle },
 ];
+
 
 export default function AggregatorLayout() {
   const navigate = useNavigate();

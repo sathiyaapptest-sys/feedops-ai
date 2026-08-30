@@ -1,7 +1,7 @@
 import { Outlet, useNavigate, NavLink } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth } from '../../lib/firebase';
-import { LogOut, Store, Menu, Sparkles, HelpCircle } from 'lucide-react';
+import { LogOut, Store, Menu, Sparkles, HelpCircle, Activity } from 'lucide-react';
 
 export default function MerchantLayout() {
   const navigate = useNavigate();
@@ -51,6 +51,13 @@ export default function MerchantLayout() {
                 (Optional)
               </span>
             </div>
+          </NavLink>
+          <NavLink
+            to="/merchant/activity"
+            className={({ isActive }) => `flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition-all text-sm ${isActive ? 'bg-blue-600 text-white font-semibold shadow-md shadow-blue-500/20' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/60 font-medium'}`}
+          >
+            <Activity className="w-4 h-4" />
+            <span>Activity Logs</span>
           </NavLink>
           <NavLink
             to="/merchant/ask"

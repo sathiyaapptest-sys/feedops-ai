@@ -28,6 +28,7 @@ native vector search, sidestepping the same broken SDK entirely.
 import datetime
 import logging
 import os
+import uuid
 from typing import Any, Dict, List, Optional
 
 import google.auth
@@ -40,6 +41,7 @@ ORGANIZATIONS_COLLECTION = os.getenv("FIRESTORE_ORGANIZATIONS_COLLECTION", "orga
 UPLOAD_BATCHES_COLLECTION = os.getenv("FIRESTORE_UPLOAD_BATCHES_COLLECTION", "upload_batches")
 MENUS_COLLECTION = os.getenv("FIRESTORE_MENUS_COLLECTION", "menus")
 CONVERSION_CHECKS_COLLECTION = os.getenv("FIRESTORE_CONVERSION_CHECKS_COLLECTION", "conversion_checks")
+ACTIVITY_LOGS_COLLECTION = os.getenv("FIRESTORE_ACTIVITY_LOGS_COLLECTION", "activity_logs")
 
 # Lifecycle statuses a merchant document can hold.
 STATUS_NEW = "new"
@@ -88,7 +90,14 @@ class _FirestoreRest:
     def __init__(self, project: Optional[str] = None):
         credentials, default_project = google.auth.default()
         self._session = google.auth.transport.requests.AuthorizedSession(credentials)
-        self.project = project or default_project
+        self.project = (
+            project
+            or os.getenv("FIREBASE_PROJECT_ID")
+            or os.getenv("GOOGLE_CLOUD_PROJECT")
+            or os.getenv("GCP_PROJECT")
+            or default_project
+            or "gen-lang-client-0724450224"
+        )
         self._base = f"{_FIRESTORE_BASE}/projects/{self.project}/databases/(default)/documents"
 
     # ---- Firestore <-> Python value (de)serialization ----
@@ -498,6 +507,83 @@ class ConversionCheckRepository:
 
     def list_all(self) -> List[Dict[str, Any]]:
         return self.client.list_all(CONVERSION_CHECKS_COLLECTION)
+
+
+class ActivityLogRepository:
+    """
+    Firestore-backed audit and activity log tracking all operations (merchant onboard,
+    bulk upload, Places matching, triage actions, feed pushes, conversion pings,
+    menu extractions, and config updates) across local and cloud environments.
+    """
+
+    def __init__(self, client: Optional[_FirestoreRest] = None):
+        self.client = client or get_client()
+
+    def record(
+        self,
+        action: str,
+        actor: str = "system",
+        status: str = "success",
+        details: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        duration_ms: Optional[float] = None,
+        category: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        log_id = f"log_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        payload = {
+            "log_id": log_id,
+            "timestamp": now_iso,
+            "action": action,
+            "actor": actor or "system",
+            "status": status,
+            "details": details,
+            "metadata": metadata or {},
+            "duration_ms": duration_ms or 0.0,
+            "category": category or self._infer_category(action),
+            "created_at": SERVER_TIMESTAMP,
+        }
+        try:
+            self.client.set(ACTIVITY_LOGS_COLLECTION, log_id, payload, merge=False)
+        except Exception as e:
+            logger.warning(f"Could not record activity log to Firestore: {e}")
+        return payload
+
+    def _infer_category(self, action: str) -> str:
+        act = action.upper()
+        if "FEED" in act or "SFTP" in act:
+            return "Feeds & SFTP"
+        if "MERCHANT" in act or "PLACE" in act or "TRIAGE" in act or "ROSTER" in act or "UPLOAD" in act:
+            return "Merchants & Places"
+        if "CONVERSION" in act or "PING" in act:
+            return "Conversion"
+        if "MENU" in act or "VISION" in act or "OCR" in act:
+            return "Menu & Vision"
+        if "AGENT" in act or "RAG" in act or "SUPPORT" in act:
+            return "AI Agents"
+        return "System"
+
+    def list_recent(self, limit: int = 100, category: Optional[str] = None) -> List[Dict[str, Any]]:
+        try:
+            items = self.client.list_all(ACTIVITY_LOGS_COLLECTION)
+            items.sort(key=lambda x: x.get("timestamp") or x.get("created_at") or "", reverse=True)
+            if category and category != "All":
+                items = [i for i in items if i.get("category") == category]
+            return items[:limit]
+        except Exception as e:
+            logger.warning(f"Could not list activity logs from Firestore: {e}")
+            return []
+
+    def clear_all(self) -> int:
+        count = 0
+        try:
+            doc_ids = self.client.list_all_doc_ids(ACTIVITY_LOGS_COLLECTION)
+            for doc_id in doc_ids:
+                self.client.delete(ACTIVITY_LOGS_COLLECTION, doc_id)
+                count += 1
+        except Exception as e:
+            logger.warning(f"Could not clear activity logs: {e}")
+        return count
 
 
 def seed_from_snapshot(merchants: List[Dict[str, Any]], repo: Optional[MerchantRepository] = None) -> int:
