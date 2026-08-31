@@ -210,7 +210,12 @@ def _sftp_client_for(environment: str, org_id: Optional[str] = None) -> GoogleSF
             from backend.db.firestore_client import OrganizationRepository
             org = OrganizationRepository().get(org_id) or {}
             config = org.get("config", {})
-            username = config.get(f"sftp_username_{environment.lower()}") or config.get("sftp_username_sandbox")
+            # Environment-specific only -- falling back to the sandbox
+            # username here (the old behavior) would silently authenticate a
+            # "production" push as sandbox whenever production's own
+            # username hasn't been entered yet, instead of failing loudly
+            # or falling through to the shared default below.
+            username = config.get(f"sftp_username_{environment.lower()}")
         except Exception:
             pass
 
@@ -233,6 +238,71 @@ def _sftp_client_for(environment: str, org_id: Optional[str] = None) -> GoogleSF
 
 
 
+def compile_feed_bundle(
+    snapshot_path: str = DEFAULT_SNAPSHOT_PATH, allow_fixture_fallback: bool = True,
+) -> Tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Loads the current merchant roster, applies the closed-merchant guard, and
+    compiles the entity/action/service feed bundle -- extracted out of
+    run_daily_feed_push so the read-only feed-preview endpoint (aggregator
+    wants to eyeball the real compiled JSON before clicking Upload Now, same
+    as the merchant self-service Services page already lets a single
+    merchant do) can produce the exact same output a real push would,
+    without duplicating -- and risking drifting from -- this row-shaping.
+
+    Returns (feed_bundle_paths, merged_rows, excluded_merchants). An empty
+    feed_bundle_paths with no merged_rows means there was no merchant data
+    to compile from.
+    """
+    merchants = _load_merchants(snapshot_path, allow_fixture_fallback=allow_fixture_fallback)
+    if not merchants:
+        return {}, [], []
+
+    kept, excluded = _apply_closed_merchant_guard(merchants)
+    _append_exclude_list(excluded)
+
+    if excluded:
+        logger.info(f"Excluded {len(excluded)} closed merchant(s): {[m['store_id'] for m in excluded]}")
+
+    compiler = ActionsCenterFeedCompiler()
+    merged = []
+    for m in kept:
+        row = {
+            "name": m["name"],
+            "address": m["address"],
+            "id": m["store_id"],
+            # A bulk upload's own vendor_id (see excel_parser.py), when present,
+            # takes priority over store_id for entity_id -- confirmed live that
+            # an earlier real push already registered entities in Google's
+            # system as vendor_<vendor_id> (e.g. vendor_101), some already
+            # Matched there. Falling back to store_id's slug on every push
+            # instead would keep minting brand-new, unmatched parallel entities
+            # rather than updating the ones Google already has.
+            "vendor_id": m.get("vendor_id"),
+            "telephone": m.get("telephone"),
+            "action_link": m.get("action_link"),
+            # Carried through so the service feed (lead time + hours) can be
+            # compiled for merchants that have real data on file -- see
+            # feed_compiler.py's _build_service_rows, which omits a merchant
+            # from the service feed entirely rather than invent either.
+            "service_types": m.get("service_types"),
+            "opening_hours": m.get("opening_hours"),
+            "lead_time_minutes": m.get("lead_time_minutes"),
+            # Precise coordinates a bulk upload may have supplied directly
+            # (see excel_parser.py) -- _build_location prefers these over the
+            # unstructured address when present.
+            "latitude": m.get("latitude"),
+            "longitude": m.get("longitude"),
+        }
+        match = m.get("match_result") or {}
+        if match.get("place_id"):
+            row["place_id"] = match["place_id"]
+        merged.append(row)
+
+    feed_bundle = compiler.compile_feeds(merged)
+    return feed_bundle, merged, excluded
+
+
 def run_daily_feed_push(
     environment: str = "sandbox",
     snapshot_path: str = DEFAULT_SNAPSHOT_PATH,
@@ -242,8 +312,8 @@ def run_daily_feed_push(
     """Regenerates the feed bundle from the current merchant data and uploads it."""
     logger.info(f"Starting daily feed push ({environment})...")
 
-    merchants = _load_merchants(snapshot_path, allow_fixture_fallback=allow_fixture_fallback)
-    if not merchants:
+    feed_bundle, merged, excluded = compile_feed_bundle(snapshot_path, allow_fixture_fallback)
+    if not merged:
         logger.warning("No merchant data available -- nothing to push.")
         return {
             "batch_id": None,
@@ -259,36 +329,6 @@ def run_daily_feed_push(
             "batch_recorded": False,
             "error": "No merchant data on file yet -- upload merchants before pushing a feed.",
         }
-
-    kept, excluded = _apply_closed_merchant_guard(merchants)
-    _append_exclude_list(excluded)
-
-    if excluded:
-        logger.info(f"Excluded {len(excluded)} closed merchant(s): {[m['store_id'] for m in excluded]}")
-
-    compiler = ActionsCenterFeedCompiler()
-    merged = []
-    for m in kept:
-        row = {
-            "name": m["name"],
-            "address": m["address"],
-            "id": m["store_id"],
-            "telephone": m.get("telephone"),
-            "action_link": m.get("action_link"),
-            # Carried through so the service feed (lead time + hours) can be
-            # compiled for merchants that have real data on file -- see
-            # feed_compiler.py's _build_service_rows, which omits a merchant
-            # from the service feed entirely rather than invent either.
-            "service_types": m.get("service_types"),
-            "opening_hours": m.get("opening_hours"),
-            "lead_time_minutes": m.get("lead_time_minutes"),
-        }
-        match = m.get("match_result") or {}
-        if match.get("place_id"):
-            row["place_id"] = match["place_id"]
-        merged.append(row)
-
-    feed_bundle = compiler.compile_feeds(merged)
 
     sftp = _sftp_client_for(environment, org_id=org_id)
     upload_result = sftp.upload_feeds(list(feed_bundle.values()))
@@ -315,7 +355,7 @@ def run_daily_feed_push(
         "batch_id": batch_id,
         "environment": environment,
         "timestamp": now.isoformat(),
-        "merchants_in_snapshot": len(merchants),
+        "merchants_in_snapshot": len(merged) + len(excluded),
         "merchants_excluded": len(excluded),
         "merchants_pushed": len(merged),
         "feed_files": list(feed_bundle.values()),
@@ -328,15 +368,42 @@ def run_daily_feed_push(
     return summary
 
 
-async def _dispatch_ping(environment: str, partner_id: Optional[str] = None) -> Dict[str, Any]:
-    return await ConversionSentryTool().dispatch_conversion_ping(environment, partner_id=partner_id)
+async def _dispatch_ping(environment: str, partner_id: Optional[str] = None, tokens: Optional[List[str]] = None) -> Dict[str, Any]:
+    return await ConversionSentryTool().dispatch_conversion_ping(environment, tokens=tokens, partner_id=partner_id)
 
 
-def run_weekly_conversion_sweep(environment: str = "sandbox", partner_id: Optional[str] = None) -> Dict[str, Any]:
+def _org_config(org_id: Optional[str]) -> Dict[str, Any]:
+    if not org_id:
+        return {}
+    try:
+        from backend.db.firestore_client import OrganizationRepository
+        org = OrganizationRepository().get(org_id) or {}
+        return org.get("config") or {}
+    except Exception as e:
+        logger.warning(f"Could not load org config for '{org_id}': {e}")
+        return {}
+
+
+def run_weekly_conversion_sweep(
+    environment: str = "sandbox",
+    partner_id: Optional[str] = None,
+    tokens: Optional[List[str]] = None,
+    org_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Playbook section 7: POST the sandbox test tokens (or prod token) so the rolling
     "3 events / 7 days" conversion-tracking check never lapses. Run this at least once
     a week per environment.
+
+    Unlike sandbox (fixed test tokens, see conversion_sentry.py), production has
+    no fixed test token -- Google's production endpoint only accepts a real
+    rwg_token a customer actually generated by clicking through. `tokens`, when
+    not passed explicitly, is looked up from org_id's saved config
+    (production_rwg_tokens, comma-separated) the same way `partner_id` already
+    is -- this is what lets the scheduled Cloud Run Job (which only has
+    --org-id, not real request-time values) dispatch production pings on its
+    own once an aggregator has captured and saved a real token, instead of
+    always failing with "no tokens to dispatch."
 
     Persists every run to Firestore -- ConversionSentryTool's own health_log is
     in-memory only, and Cloud Run Jobs run as separate ephemeral processes each
@@ -349,7 +416,13 @@ def run_weekly_conversion_sweep(environment: str = "sandbox", partner_id: Option
     scheduled Cloud Run Job invocation, which has no per-org context.
     """
     logger.info(f"Starting weekly conversion sweep ({environment})...")
-    response = _run_sync(_dispatch_ping(environment, partner_id))
+    config = _org_config(org_id)
+    partner_id = partner_id or config.get("conversion_partner_id")
+    if tokens is None and environment == "production":
+        raw_tokens = config.get("production_rwg_tokens")
+        tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()] if raw_tokens else None
+
+    response = _run_sync(_dispatch_ping(environment, partner_id, tokens))
     results = response.get("results", [])
     all_ok = bool(results) and all(r.get("status_code") == 200 for r in results)
     now = datetime.now(timezone.utc)
@@ -381,20 +454,61 @@ def _run_sync(coro):
     return asyncio.run(coro)
 
 
+def _review_approved_for_production(org_id: Optional[str]) -> bool:
+    """
+    Whether Sandbox-to-Production Review is approved for org_id -- gates
+    whether the scheduled daily push / weekly conversion sweep also touch
+    production, not just sandbox, so one Cloud Scheduler job can safely run
+    "forever" without a human ever needing to stand up a second production
+    job by hand once review passes (see deploy/README.md). No org_id, or a
+    lookup failure, conservatively means "not yet approved" -- never
+    silently push to production without a real signal it's allowed.
+    """
+    if not org_id:
+        return False
+    try:
+        from backend.db.firestore_client import OrganizationRepository
+        org = OrganizationRepository().get(org_id) or {}
+        return (org.get("config") or {}).get("sandbox_to_prod_review_status") == "approved"
+    except Exception as e:
+        logger.warning(f"Could not check review approval for org '{org_id}': {e}")
+        return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="FeedOps AI scheduled tasks")
     parser.add_argument("--job", required=True, choices=["daily", "weekly"])
-    parser.add_argument("--environment", default=os.getenv("ENVIRONMENT", "sandbox"), choices=["sandbox", "production"])
+    parser.add_argument(
+        "--environment", default=None, choices=["sandbox", "production"],
+        help=(
+            "Force a single environment. Omit for the normal scheduled-job "
+            "behavior: always run sandbox, and also run production once "
+            "Sandbox-to-Production Review is approved for --org-id -- no "
+            "separate production job/trigger needed."
+        ),
+    )
+    parser.add_argument("--org-id", default=os.getenv("FEEDOPS_ORG_ID"))
     args = parser.parse_args()
 
-    if args.job == "daily":
-        summary = run_daily_feed_push(environment=args.environment)
-        ok = summary["ok"]
+    if args.environment:
+        environments = [args.environment]
     else:
-        summary = run_weekly_conversion_sweep(environment=args.environment)
-        ok = summary["all_ok"]
+        environments = ["sandbox"]
+        if _review_approved_for_production(args.org_id):
+            environments.append("production")
 
-    print(json.dumps(summary, indent=2, default=str))
+    ok = True
+    summaries: Dict[str, Any] = {}
+    for environment in environments:
+        if args.job == "daily":
+            summary = run_daily_feed_push(environment=environment, org_id=args.org_id)
+            ok = ok and summary["ok"]
+        else:
+            summary = run_weekly_conversion_sweep(environment=environment, org_id=args.org_id)
+            ok = ok and summary["all_ok"]
+        summaries[environment] = summary
+
+    print(json.dumps(summaries, indent=2, default=str))
     return 0 if ok else 1
 
 

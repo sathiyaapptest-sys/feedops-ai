@@ -90,7 +90,13 @@ def compute_feed_streak(
                 day_clean = False
                 break
             for key, value in batch.items():
-                if key.startswith("feed_status_") and value != "confirmed_clean":
+                # mark_feed_status also writes feed_status_{type}_by /
+                # _at audit companions alongside the real status field --
+                # those also start with "feed_status_" but hold an email
+                # or timestamp, never "confirmed_clean", so including them
+                # here made every marked batch register as unclean, no
+                # matter how many feeds were actually accepted.
+                if key.startswith("feed_status_") and not key.endswith(("_by", "_at")) and value != "confirmed_clean":
                     day_clean = False
                     break
             if not day_clean:
@@ -173,7 +179,17 @@ def compute_journey(
     # Step 2/3: Sandbox
     feeds_sandbox = compute_feed_streak(batches, "sandbox", today)
     no_merchants = merchant_count == 0
-    if not setup_complete:
+    # Self-attested, same mechanism as the Review steps below -- for an
+    # aggregator who already cleared Google's real 3-day sandbox requirement
+    # before this app's local push history existed (or has gaps in it from
+    # debugging), recomputing from scratch here would incorrectly re-block
+    # them. This never contacts Google; it's on the aggregator to have
+    # actually checked Partner Portal before setting it.
+    feeds_sandbox_override = config.get("feeds_sandbox_override_status") == REVIEW_APPROVED
+    if feeds_sandbox_override:
+        feeds_sandbox_status = STATUS_COMPLETE
+        feeds_sandbox_detail = "Manually confirmed already live in Google's system (overrides local push history)."
+    elif not setup_complete:
         feeds_sandbox_status = STATUS_PENDING
         feeds_sandbox_detail = f"{feeds_sandbox['current']}/{feeds_sandbox['target']} consecutive clean days."
     elif no_merchants:
@@ -216,7 +232,11 @@ def compute_journey(
     # Step 5/6: Production
     review_approved = review_status == STATUS_COMPLETE
     feeds_production = compute_feed_streak(batches, "production", today)
-    if not review_approved:
+    feeds_production_override = config.get("feeds_production_override_status") == REVIEW_APPROVED
+    if feeds_production_override:
+        feeds_production_status = STATUS_COMPLETE
+        feeds_production_detail = "Manually confirmed already live in Google's system (overrides local push history)."
+    elif not review_approved:
         feeds_production_status = STATUS_PENDING
         feeds_production_detail = f"{feeds_production['current']}/{feeds_production['target']} consecutive clean days."
     elif no_merchants:

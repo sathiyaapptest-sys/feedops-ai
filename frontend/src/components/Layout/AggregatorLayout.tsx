@@ -57,9 +57,18 @@ export default function AggregatorLayout() {
         </div>
       </aside>
 
-      {/* Main Content -- the only scrollable region */}
-      <main className="flex-1 p-8 overflow-y-auto">
-        <Outlet />
+      {/* Main Content -- the only scrollable region. Padding lives on the
+          inner div, not <main> itself: a position:sticky descendant (see
+          StepNav.tsx) sticks relative to its nearest scrolling ancestor's
+          OWN padding box, so padding directly on <main> forces a permanent
+          gap at the scrolled-to-top position that isn't part of the sticky
+          element's own (opaque) box -- confirmed live, whatever scrolls
+          into that gap show through underneath the sticky bar instead of
+          being covered by it. Padding one level in avoids that entirely. */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="p-8">
+          <Outlet />
+        </div>
       </main>
     </div>
   );

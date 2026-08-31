@@ -38,7 +38,7 @@ from backend.db.firestore_client import (
     UploadBatchRepository, VERIFICATION_CONFIRMED_CLEAN, VERIFICATION_FLAGGED_ERRORS,
     MenuRepository, ConversionCheckRepository, ActivityLogRepository,
 )
-from backend.jobs.scheduled_tasks import run_daily_feed_push, run_weekly_conversion_sweep
+from backend.jobs.scheduled_tasks import run_daily_feed_push, run_weekly_conversion_sweep, compile_feed_bundle
 from backend.jobs.menu_feed_push import run_menu_feed_push
 
 app = FastAPI(title="FeedOps AI Backend")
@@ -61,14 +61,19 @@ def log_activity(
     metadata: Optional[Dict[str, Any]] = None,
     duration_ms: Optional[float] = None,
     category: Optional[str] = None,
+    timestamp: Optional[str] = None,
 ):
     """
     Dual-layer structured audit & activity logger:
     1. Outputs clean human-readable and structured JSON logs to terminal stdout -> auto-ingested by Cloud Logging.
     2. Persists to Firestore `activity_logs` collection -> rendered in the UI Activity Log viewer.
+
+    `timestamp` overrides "now" for reconstructing a historical entry from
+    data that already has its own real timestamp (a backfill script only --
+    normal call sites never pass this).
     """
     actor_str = actor or "system"
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = timestamp or datetime.now(timezone.utc).isoformat()
     log_entry = {
         "timestamp": now_iso,
         "action": action,
@@ -94,6 +99,7 @@ def log_activity(
             metadata=metadata,
             duration_ms=duration_ms,
             category=category,
+            timestamp=timestamp,
         )
     except Exception as e:
         logger.warning(f"Could not persist activity log: {e}")
@@ -121,10 +127,22 @@ class OrganizationConfigIn(BaseModel):
     sftp_username_sandbox: Optional[str] = None
     sftp_username_production: Optional[str] = None
     conversion_partner_id: Optional[str] = None
+    # Production has no fixed sandbox-style test token -- Google's production
+    # conversion endpoint only accepts a real rwg_token a customer actually
+    # generated (see conversion_sentry.py). Comma-separated: Google's own
+    # "3 events" check wants 3 distinct tokens (= 3 distinct referred
+    # merchants), same as the sandbox test-token set.
+    production_rwg_tokens: Optional[str] = None
     portal_status_sandbox: Optional[str] = None
     portal_status_production: Optional[str] = None
     sandbox_to_prod_review_status: Optional[str] = None
     launch_review_status: Optional[str] = None
+    # Self-attested override for an aggregator who already cleared Google's
+    # real 3-consecutive-day feed requirement before this app tracked it (or
+    # has gaps in local push history from debugging) -- see
+    # onboarding_journey.py's compute_journey. Never contacts Google.
+    feeds_sandbox_override_status: Optional[str] = None
+    feeds_production_override_status: Optional[str] = None
     # Menu Feeds -- a separate, opt-in onboarding track (see
     # backend/tools/onboarding_journey.py's compute_menu_journey). Defaults
     # off; every field below is additive and never read by the core 7-step
@@ -246,9 +264,21 @@ async def get_activity_logs(
     category: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """Retrieves recent system-wide audit and activity logs across all actions."""
+    """Retrieves recent audit and activity logs. A merchant caller (one with a
+    saved `merchants/{email}` profile) only sees their own actions -- every
+    log_activity() call site already stamps `actor` with the authenticated
+    caller's email, so filtering on it needs no schema change or backfill.
+    Merchants have no cross-merchant/aggregator oversight role in this app.
+    An aggregator caller (no matching merchant profile) sees everything
+    system-wide, exactly as before this scoping was added."""
+    email = current_user.get("email")
+    actor_filter = None
+    if email:
+        is_merchant = await asyncio.to_thread(MerchantRepository().get, email)
+        if is_merchant:
+            actor_filter = email
     repo = ActivityLogRepository()
-    logs = await asyncio.to_thread(repo.list_recent, limit, category)
+    logs = await asyncio.to_thread(repo.list_recent, limit, category, actor_filter)
     return {"status": "ok", "logs": logs, "total": len(logs)}
 
 
@@ -392,8 +422,32 @@ async def onboard_merchant(request: Request, current_user: dict = Depends(get_cu
     orchestrator = get_orchestrator()
 
     async def event_generator():
+        t0 = datetime.now(timezone.utc)
+        events: List[Dict[str, Any]] = []
         async for event_json in orchestrator.execute_entity_matching(merchant_data):
+            try:
+                events.append(json.loads(event_json))
+            except (TypeError, ValueError):
+                pass
             yield f"data: {event_json}\n\n"
+
+        # SSE streams (this and audit_merchant below) were the only two real
+        # agent flows in the app -- EntityMatcherAgent, SchemaAuditorAgent,
+        # ConversionSentry -- with nothing writing to log_activity, so the
+        # Activity Log's "AI Agents" filter had zero events ever, despite
+        # these being real, frequently-run actions.
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        final_stage = events[-1].get("stage") if events else None
+        flagged = any(e.get("status") == "flagged" for e in events)
+        log_activity(
+            "AI_ENTITY_MATCH_RUN",
+            actor=email or "unknown",
+            status="warning" if flagged else "success",
+            details=f"EntityMatcherAgent ran for '{merchant_data.get('name', 'unknown store')}' -- {len(events)} step(s), ended at '{final_stage}'.",
+            metadata={"store_id": merchant_data.get("store_id"), "steps": len(events), "final_stage": final_stage},
+            duration_ms=duration_ms,
+            category="AI Agents",
+        )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -475,8 +529,27 @@ async def audit_merchant(current_user: dict = Depends(get_current_user)):
     orchestrator = get_orchestrator()
 
     async def event_generator():
+        t0 = datetime.now(timezone.utc)
+        events: List[Dict[str, Any]] = []
         async for event_json in orchestrator.execute_feed_compilation(merchant):
+            try:
+                events.append(json.loads(event_json))
+            except (TypeError, ValueError):
+                pass
             yield f"data: {event_json}\n\n"
+
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        final_stage = events[-1].get("stage") if events else None
+        flagged = any(e.get("status") == "flagged" for e in events)
+        log_activity(
+            "AI_SCHEMA_AUDIT_RUN",
+            actor=email,
+            status="warning" if flagged else "success",
+            details=f"SchemaAuditorAgent + ConversionSentry ran for '{merchant.get('name', email)}' -- {len(events)} step(s), ended at '{final_stage}'.",
+            metadata={"store_id": email, "steps": len(events), "final_stage": final_stage},
+            duration_ms=duration_ms,
+            category="AI Agents",
+        )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -668,6 +741,37 @@ async def trigger_pipeline(environment: str = "sandbox", current_user: dict = De
     )
     return summary
 
+@app.get("/api/feeds/preview")
+async def preview_feeds(current_user: dict = Depends(get_current_user)):
+    """
+    Compiles the current active merchant roster into the exact entity/action/
+    service JSON a real push would send -- without touching SFTP or recording
+    a batch -- so an aggregator can eyeball the real compiled output before
+    clicking Upload Now. Mirrors the merchant self-service Services page's
+    "Compiled Proto Feed Inspector", but for the whole roster rather than one
+    merchant, and reuses run_daily_feed_push's exact compile step
+    (compile_feed_bundle) so what's previewed here is truly what a real push
+    would send, not an approximation that could drift from it.
+    """
+    feed_bundle, merged, excluded = await asyncio.to_thread(compile_feed_bundle, allow_fixture_fallback=False)
+    if not merged:
+        return {
+            "status": "error",
+            "message": "No merchant data on file yet -- upload merchants before previewing a feed.",
+        }
+
+    feeds: Dict[str, Any] = {}
+    for feed_type, path in feed_bundle.items():
+        with open(path) as f:
+            feeds[feed_type] = json.load(f)
+
+    return {
+        "status": "success",
+        "merchants_previewed": len(merged),
+        "excluded_closed": len(excluded),
+        "feeds": feeds,
+    }
+
 @app.get("/api/batches")
 async def list_batches():
     """Upload batch history for the Ordering Redirect track.
@@ -773,9 +877,14 @@ async def trigger_conversion_check(environment: str = "sandbox", current_user: d
 
     t0 = datetime.now(timezone.utc)
     try:
-        summary = await asyncio.to_thread(run_weekly_conversion_sweep, environment, partner_id)
+        summary = await asyncio.to_thread(run_weekly_conversion_sweep, environment, partner_id, None, org_id)
         duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
-        pings = summary.get("checks", [])
+        # run_weekly_conversion_sweep's summary dict key is "results" (see
+        # scheduled_tasks.py), not "checks" -- this always silently fell back
+        # to the empty default, so the activity log reported "Dispatched 0
+        # conversion ping(s)" on every run regardless of how many were
+        # actually sent, real successes included.
+        pings = summary.get("results", [])
         log_activity(
             "CONVERSION_PING_DISPATCHED",
             actor=current_user.get("email"),
@@ -937,7 +1046,19 @@ async def ask_support(request: Request):
     question = data.get("question", "")
     if not question:
         return {"answer": "Ask a question.", "sources": []}
-    return await get_orchestrator().ask_support(question)
+    t0 = datetime.now(timezone.utc)
+    result = await get_orchestrator().ask_support(question)
+    duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+    log_activity(
+        "AI_ASK_SUPPORT",
+        actor="unknown",
+        status="success",
+        details=f"Ask FeedOps answered a question, citing {len(result.get('sources', []))} source(s).",
+        metadata={"question": question, "sources": result.get("sources", [])},
+        duration_ms=duration_ms,
+        category="AI Agents",
+    )
+    return result
 
 @app.get("/api/places/search")
 async def search_places(query: str):
@@ -1024,11 +1145,71 @@ async def upload_feed_screenshot(file: UploadFile = File(...), current_user: dic
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
+@app.post("/api/support/screenshot-insight")
+async def screenshot_insight(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+    """
+    Ask FeedOps' "Screenshot Insights" tab: reads a Partner Portal screenshot
+    with the same FeedScreenshotAnalyzer Dashboard's own Upload Portal
+    Screenshot button uses, then grounds whatever it detected against the real
+    onboarding playbook via RAG (explain_screenshot_insight, same retrieval +
+    synthesis path as Ask FeedOps' text Q&A). Advisory/read-only, same as the
+    analyzer itself -- unlike Dashboard's upload flow, nothing here is ever
+    written back to an onboarding step or feed status.
+    """
+    temp_path = None
+    t0 = datetime.now(timezone.utc)
+    try:
+        fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(file.filename)[1])
+        with os.fdopen(fd, 'wb') as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        analyzer = FeedScreenshotAnalyzer()
+        analysis = analyzer.analyze_from_file(temp_path)
+        insight = await get_orchestrator().explain_screenshot_insight(analysis.model_dump())
+
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "AI_SCREENSHOT_INSIGHT",
+            actor=current_user.get("email"),
+            status="success",
+            details=f"Ask FeedOps screenshot insight generated for '{file.filename}' (screen_type: {analysis.screen_type})",
+            metadata={"filename": file.filename, "screen_type": analysis.screen_type, "sources": len(insight.get("sources", []))},
+            duration_ms=duration_ms,
+            category="AI Agents",
+        )
+        return {"status": "success", "data": analysis.model_dump(), "insight": insight}
+    except Exception as e:
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "AI_SCREENSHOT_INSIGHT_FAILED",
+            actor=current_user.get("email"),
+            status="error",
+            details=f"Screenshot insight failed for '{file.filename}': {str(e)}",
+            metadata={"filename": file.filename},
+            duration_ms=duration_ms,
+            category="AI Agents",
+        )
+        return {"status": "error", "message": str(e)}
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
 @app.post("/api/entity-match/assist")
 async def entity_match_assist(file: UploadFile = File(...), org_id: Optional[str] = Form(None)):
+    t0 = datetime.now(timezone.utc)
     try:
         parsed = parse_entity_csv(file.file)
         result = await suggest_matches(parsed["rows"], org_id)
+        duration_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+        log_activity(
+            "AI_ENTITY_MATCH_ASSIST",
+            actor=org_id or "unknown",
+            status="success",
+            details=f"Suggested {len(result.get('suggestions', []))} Maps URL(s) from {len(parsed['rows'])} row(s) in '{file.filename}'.",
+            metadata={"filename": file.filename, "rows_total": len(parsed["rows"]), "suggestions": len(result.get("suggestions", []))},
+            duration_ms=duration_ms,
+            category="AI Agents",
+        )
         return {
             "status": "success",
             "rows_total": len(parsed["rows"]),
@@ -1039,20 +1220,19 @@ async def entity_match_assist(file: UploadFile = File(...), org_id: Optional[str
         return {"status": "error", "message": str(e)}
 
 async def _persist_bulk_merchant(merchant: Dict[str, Any], org_id: str) -> Dict[str, Any]:
+    """
+    Re-uploading the same file (e.g. to backfill new columns onto merchants
+    already on file) must not silently re-run the Places match and overwrite
+    a status a human already decided in the Triage Queue -- or a prior
+    high-confidence auto-match -- with a fresh, possibly worse-confidence
+    guess. Only a merchant with no status yet, or one still sitting in
+    needs_review/no_listing, gets (re-)matched; approved/matched/rejected
+    are left alone and just get their other fields refreshed via the
+    Firestore merge in MerchantRepository.upsert.
+    """
     store_id = slugify_store_id(org_id, merchant["name"])
-    try:
-        match = await resolve_entity_match(merchant["name"], merchant["address"])
-    except Exception as e:
-        logger.warning(f"Places lookup failed for bulk row '{merchant['name']}': {e}")
-        match = {"confidence": 0.0, "place_id": None}
-
-    confidence = match.get("confidence", 0.0)
-    if confidence >= 0.90:
-        status = STATUS_MATCHED
-    elif confidence > 0.0:
-        status = STATUS_NEEDS_REVIEW
-    else:
-        status = STATUS_NO_LISTING
+    existing = await asyncio.to_thread(MerchantRepository().get, store_id)
+    existing_status = (existing or {}).get("status")
 
     record: Dict[str, Any] = {
         "store_id": store_id,
@@ -1061,11 +1241,35 @@ async def _persist_bulk_merchant(merchant: Dict[str, Any], org_id: str) -> Dict[
         "address": merchant["address"],
         "telephone": merchant.get("telephone"),
         "action_link": merchant.get("action_link"),
-        "status": status,
+        "vendor_id": merchant.get("vendor_id"),
+        "latitude": merchant.get("latitude"),
+        "longitude": merchant.get("longitude"),
+        "service_types": merchant.get("service_types"),
+        "lead_time_minutes": merchant.get("lead_time_minutes"),
+        "opening_hours": merchant.get("opening_hours"),
         "visibility": "private",
-        "confidence": match.get("confidence"),
-        "place_id": match.get("place_id"),
     }
+
+    if existing_status in (STATUS_APPROVED, STATUS_MATCHED, STATUS_REJECTED):
+        status = existing_status
+    else:
+        try:
+            match = await resolve_entity_match(merchant["name"], merchant["address"])
+        except Exception as e:
+            logger.warning(f"Places lookup failed for bulk row '{merchant['name']}': {e}")
+            match = {"confidence": 0.0, "place_id": None}
+
+        confidence = match.get("confidence", 0.0)
+        if confidence >= 0.90:
+            status = STATUS_MATCHED
+        elif confidence > 0.0:
+            status = STATUS_NEEDS_REVIEW
+        else:
+            status = STATUS_NO_LISTING
+        record["confidence"] = match.get("confidence")
+        record["place_id"] = match.get("place_id")
+
+    record["status"] = status
     await asyncio.to_thread(MerchantRepository().upsert, {k: v for k, v in record.items() if v is not None})
     return {"store_id": store_id, "name": merchant["name"], "status": status}
 

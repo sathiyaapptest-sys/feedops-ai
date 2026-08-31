@@ -4,6 +4,7 @@ import { api } from '../../../lib/api';
 import { AlertTriangle, ArrowRight, Rocket } from 'lucide-react';
 import { FeedStatus } from '../FeedStatus';
 import { FeedHealth } from '../FeedHealth';
+import { FeedPreview } from '../FeedPreview';
 import { EntityMatchAssist } from '../EntityMatchAssist';
 
 interface FeedsStepProps {
@@ -18,6 +19,7 @@ interface FeedsStepProps {
 export function FeedsStep({ environment }: FeedsStepProps) {
   const [totalMerchants, setTotalMerchants] = useState<number | null>(null); // null = loading
   const [hasPushed, setHasPushed] = useState<boolean | null>(null); // null = loading
+  const [feedHealthRefresh, setFeedHealthRefresh] = useState(0);
 
   useEffect(() => {
     api.getReadiness()
@@ -67,9 +69,11 @@ export function FeedsStep({ environment }: FeedsStepProps) {
         </div>
       )}
 
+      {totalMerchants !== null && totalMerchants > 0 && <FeedPreview />}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <FeedStatus environment={environment} />
-        <FeedHealth environment={environment} />
+        <FeedStatus environment={environment} onMarked={() => setFeedHealthRefresh((n) => n + 1)} />
+        <FeedHealth environment={environment} refreshSignal={feedHealthRefresh} />
         {environment === 'sandbox' && <EntityMatchAssist />}
       </div>
     </div>

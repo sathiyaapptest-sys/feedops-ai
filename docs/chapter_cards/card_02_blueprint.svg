@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1220"/>
+      <stop offset="100%" stop-color="#1a1330"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="78%" cy="42%" r="55%">
+      <stop offset="0%" stop-color="#4c8bf5" stop-opacity="0.22"/>
+      <stop offset="55%" stop-color="#4c8bf5" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#4c8bf5" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1920" height="1080" fill="url(#bgGrad)"/>
+  <rect x="0" y="0" width="1920" height="1080" fill="url(#glow)"/>
+
+  <!-- huge faint chapter numeral watermark -->
+  <text x="1330" y="900" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="620"
+        fill="#4c8bf5" opacity="0.10" text-anchor="middle">02</text>
+
+  <!-- scattered accent dots (brand texture) -->
+  <g>
+    <circle cx="1660" cy="190" r="5" fill="#4c8bf5" opacity="0.85"/>
+    <circle cx="1740" cy="260" r="4" fill="#46c9e3" opacity="0.85"/>
+    <circle cx="1780" cy="420" r="6" fill="#4c8bf5" opacity="0.85"/>
+    <circle cx="1700" cy="560" r="4" fill="#5fd996" opacity="0.85"/>
+    <circle cx="1820" cy="700" r="5" fill="#4c8bf5" opacity="0.85"/>
+    <circle cx="1660" cy="840" r="4" fill="#f0ac3f" opacity="0.85"/>
+  </g>
+
+  <!-- top-left brand mark: mini converging-arcs icon + wordmark -->
+  <g transform="translate(160,110)">
+    <rect x="0" y="0" width="64" height="64" rx="16" fill="#12172a"/>
+    <g fill="none" stroke-linecap="round" transform="translate(32,32)">
+      <circle cx="0" cy="0" r="22" stroke="#46c9e3" stroke-width="3.5" stroke-dasharray="103.6 34.5" transform="rotate(133)"/>
+      <circle cx="0" cy="0" r="15" stroke="#a48cf5" stroke-width="3.5" stroke-dasharray="71.9 24" transform="rotate(133)"/>
+      <circle cx="0" cy="0" r="8.5" stroke="#5fd996" stroke-width="3.5" stroke-dasharray="40 13.4" transform="rotate(133)"/>
+    </g>
+    <circle cx="32" cy="32" r="3.5" fill="#f0ac3f"/>
+    <text x="82" y="40" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="26" fill="#f5f6fa">FeedOps AI</text>
+  </g>
+
+  <!-- kicker -->
+  <text x="160" y="330" font-family="Menlo, 'PT Mono', 'Andale Mono', monospace" font-weight="700" font-size="30"
+        fill="#4c8bf5" letter-spacing="8">CHAPTER 02</text>
+
+  <!-- accent rule -->
+  <rect x="162" y="360" width="140" height="6" rx="3" fill="#4c8bf5"/>
+
+  <!-- title -->
+  <text font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="104" fill="#f5f6fa">
+          <tspan x="160" y="560">The Agentic</tspan>
+          <tspan x="160" y="668">Blueprint</tspan>
+  </text>
+
+  <!-- footer strap -->
+  <text x="160" y="960" font-family="Menlo, 'PT Mono', 'Andale Mono', monospace" font-size="20" letter-spacing="4"
+        fill="#6b7280">GOOGLE ACTIONS CENTER · ORDERING REDIRECT, AUTOMATED</text>
+</svg>

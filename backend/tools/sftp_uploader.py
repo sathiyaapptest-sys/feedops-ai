@@ -29,10 +29,28 @@ class GoogleSFTPClient:
         Uploads timestamped feed bundles with retry logic and directory validation.
 
         Descriptors (*.filesetdesc.json) are uploaded before data files, per
-        GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md section 6's `mput` order -- Google's
-        ingestion reads descriptors first, so this ordering is required, not
-        cosmetic. Sorted here (stable) regardless of what order the caller built
-        its file list in.
+        Google's Generic SFTP reference ("The descriptor file should be uploaded
+        before the feed contents"). Sorted here (stable) regardless of what
+        order the caller built its file list in.
+
+        Uploads FLAT into upload/ (the dropbox root) -- NOT a per-run
+        subdirectory. Confirmed against Google's real Generic SFTP reference
+        (developers.google.com/.../reference/menu-feeds/generic-sftp): the
+        descriptor's data_file field holds "Paths (relative to the dropbox
+        root) specifying data files included in this feed", and "The file
+        names and path locations ... must exactly match what was included
+        within the data_file field. If any file is ... uploaded to a
+        different location then the entire feed will not be processed."
+        feed_compiler.py's data_file entries are bare filenames (no
+        directory prefix), which are only correct if the data file actually
+        lands in the dropbox root beside the descriptor -- a prior version of
+        this method nested files into upload/<timestamp>/ instead (based on
+        an internal doc that turned out not to match Google's real reference
+        here), which put the real file at a path the descriptor's bare
+        filename didn't resolve to. Confirmed live: that mismatch is exactly
+        what produced "Waiting for remaining shards" with 0 items processed,
+        even after the descriptor's own JSON was fully valid ("No issues
+        found for this ingestion").
         """
         feed_files = sorted(feed_files, key=lambda p: 0 if p.endswith(".filesetdesc.json") else 1)
 
@@ -45,7 +63,7 @@ class GoogleSFTPClient:
             }
 
         key = self._get_private_key()
-        
+
         for attempt in range(max_retries):
             transport = None
             sftp = None
@@ -53,29 +71,27 @@ class GoogleSFTPClient:
                 transport = paramiko.Transport((self.hostname, self.port))
                 transport.connect(username=self.username, pkey=key)
                 sftp = paramiko.SFTPClient.from_transport(transport)
-                
-                # Directory validation - ensure we are in a valid writable directory
+
                 try:
-                    sftp.chdir('upload') # Example directory
+                    sftp.chdir('upload')
                 except IOError:
                     logger.warning("Directory 'upload' not found. Using root.")
-                
+
                 uploaded = []
                 for file_path in feed_files:
                     if not os.path.exists(file_path):
                         logger.error(f"File not found: {file_path}")
                         continue
-                        
+
                     filename = os.path.basename(file_path)
-                    remote_path = filename
-                    
-                    logger.info(f"Uploading {file_path} to {remote_path}...")
-                    sftp.put(file_path, remote_path)
+
+                    logger.info(f"Uploading {file_path} to upload/{filename}...")
+                    sftp.put(file_path, filename)
                     uploaded.append(filename)
-                
+
                 return {
                     "status": "success",
-                    "message": f"Successfully uploaded {len(uploaded)} files.",
+                    "message": f"Successfully uploaded {len(uploaded)} files to upload/.",
                     "uploaded_files": uploaded
                 }
                 

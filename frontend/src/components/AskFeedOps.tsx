@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { HelpCircle, Loader2, BookOpen } from 'lucide-react';
+import { HelpCircle, Loader2, BookOpen, Image as ImageIcon, Sparkles } from 'lucide-react';
 
 import { api } from '@/lib/api';
 
@@ -8,7 +8,56 @@ interface Source {
   content: string;
 }
 
+interface ScreenshotStepSuggestion {
+  step_key: string;
+  suggested_status: string;
+  evidence_quote: string;
+}
+
+interface ScreenshotFeedSuggestion {
+  feed_type: string;
+  suggested_status: string;
+  confidence: number;
+  evidence_quote: string;
+}
+
+interface ScreenshotAnalysis {
+  screen_type: string;
+  summary: string;
+  next_steps: string[];
+  feed_suggestions: ScreenshotFeedSuggestion[];
+  onboarding_step_suggestions: ScreenshotStepSuggestion[];
+}
+
+/** Playbook citation card -- collapsed to a 4-line preview by default (source
+ * chunks are full markdown sections and can be long), expandable in place so
+ * nothing is permanently cut off. */
+const SourceCard: React.FC<{ source: Source }> = ({ source }) => {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="border border-slate-200 dark:border-slate-700 rounded-xl p-4 bg-slate-50/50 dark:bg-slate-900/40 text-xs">
+      <p className="font-bold text-slate-900 dark:text-white mb-1">{source.title}</p>
+      <p
+        className={`text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-wrap ${
+          expanded ? '' : 'line-clamp-4'
+        }`}
+      >
+        {source.content}
+      </p>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="mt-2 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+      >
+        {expanded ? 'Show less' : 'Show more'}
+      </button>
+    </div>
+  );
+};
+
 export const AskFeedOps: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<'ask' | 'screenshot'>('ask');
+
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<string | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
@@ -16,6 +65,40 @@ export const AskFeedOps: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
+
+  // Screenshot Insights tab -- onboarding-only, advisory: reads a Partner
+  // Portal screenshot and explains it grounded in the real playbook, never
+  // writes an onboarding step or feed status directly.
+  const [screenshotAnalyzing, setScreenshotAnalyzing] = useState(false);
+  const [screenshotError, setScreenshotError] = useState<string | null>(null);
+  const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null);
+  const [screenshotAnalysis, setScreenshotAnalysis] = useState<ScreenshotAnalysis | null>(null);
+  const [screenshotInsight, setScreenshotInsight] = useState<{ answer: string; sources: Source[] } | null>(null);
+
+  const handleScreenshotUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+    setScreenshotAnalyzing(true);
+    setScreenshotError(null);
+    setScreenshotAnalysis(null);
+    setScreenshotInsight(null);
+    setScreenshotPreview(URL.createObjectURL(file));
+
+    try {
+      const res = await api.getScreenshotInsight(file);
+      if (res.status === 'error') {
+        setScreenshotError(res.message || 'Could not read that screenshot.');
+      } else {
+        setScreenshotAnalysis(res.data);
+        setScreenshotInsight(res.insight);
+      }
+    } catch (err: any) {
+      setScreenshotError(err.message || 'Could not read that screenshot.');
+    } finally {
+      setScreenshotAnalyzing(false);
+      e.target.value = '';
+    }
+  };
 
   const TOP_FAQS = [
     // Step 1: Setup & Account
@@ -206,7 +289,36 @@ export const AskFeedOps: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Content Card */}
+      {/* Tab Switcher */}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab('ask')}
+          className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 ${
+            activeTab === 'ask'
+              ? 'bg-blue-600 text-white shadow-sm'
+              : 'bg-slate-100 dark:bg-slate-700/60 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+          }`}
+        >
+          <HelpCircle className="w-4 h-4" />
+          Ask a Question
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('screenshot')}
+          className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 ${
+            activeTab === 'screenshot'
+              ? 'bg-blue-600 text-white shadow-sm'
+              : 'bg-slate-100 dark:bg-slate-700/60 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+          }`}
+        >
+          <ImageIcon className="w-4 h-4" />
+          Screenshot Insights
+        </button>
+      </div>
+
+      {activeTab === 'ask' && (
+      /* Main Content Card */
       <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 flex flex-col gap-6">
         {/* Top 20 Clickable FAQs */}
 
@@ -307,16 +419,152 @@ export const AskFeedOps: React.FC = () => {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {sources.map((s, i) => (
-                  <div key={i} className="border border-slate-200 dark:border-slate-700 rounded-xl p-4 bg-slate-50/50 dark:bg-slate-900/40 text-xs">
-                    <p className="font-bold text-slate-900 dark:text-white mb-1">{s.title}</p>
-                    <p className="text-slate-600 dark:text-slate-300 line-clamp-4 leading-relaxed">{s.content}</p>
-                  </div>
+                  <SourceCard key={i} source={s} />
                 ))}
               </div>
             </div>
           )}
         </div>
-      </div>
+      )}
+
+      {activeTab === 'screenshot' && (
+        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 flex flex-col gap-6">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white mb-1">
+                Onboarding Screenshot Insights
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-2xl">
+                Upload a Partner Portal onboarding screen (Ingestion History, a task rollup, or the 7-step
+                Onboarding Plan) and get a plain-language read grounded in the real playbook. Advisory only --
+                this never writes an onboarding step or feed status for you.
+              </p>
+            </div>
+            <label
+              className="cursor-pointer px-4 py-2.5 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-xs ring-2 ring-blue-400/60 hover:ring-blue-400 transition-all flex items-center gap-2 shrink-0"
+            >
+              {screenshotAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+              <span>{screenshotAnalyzing ? 'Reading...' : 'Upload Screenshot'}</span>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={screenshotAnalyzing}
+                onChange={handleScreenshotUpload}
+              />
+            </label>
+          </div>
+
+          {screenshotError && (
+            <div className="bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 p-4 rounded-xl text-sm border border-red-200 dark:border-red-800">
+              {screenshotError}
+            </div>
+          )}
+
+          {(screenshotPreview || screenshotAnalysis) && (
+            <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-5">
+              {screenshotPreview && (
+                <img
+                  src={screenshotPreview}
+                  alt="Uploaded Partner Portal screenshot"
+                  className="w-full h-auto rounded-xl border border-slate-200 dark:border-slate-700 object-cover"
+                />
+              )}
+
+              {screenshotAnalysis && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-1 rounded-md bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                      {screenshotAnalysis.screen_type.replace(/_/g, ' ')}
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-slate-800 dark:text-slate-200 leading-relaxed">
+                    {screenshotAnalysis.summary}
+                  </p>
+
+                  {screenshotAnalysis.next_steps?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
+                        Next Steps
+                      </p>
+                      <ul className="space-y-1 text-sm text-slate-700 dark:text-slate-300 list-disc list-inside">
+                        {screenshotAnalysis.next_steps.map((step, i) => (
+                          <li key={i}>{step}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {(screenshotAnalysis.onboarding_step_suggestions?.length > 0 ||
+                    screenshotAnalysis.feed_suggestions?.length > 0) && (
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
+                        Detected (advisory -- not saved)
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {screenshotAnalysis.onboarding_step_suggestions?.map((s, i) => (
+                          <span
+                            key={`step-${i}`}
+                            className={`text-[10px] font-semibold px-2 py-1 rounded-md ${
+                              s.suggested_status === 'complete'
+                                ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                                : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
+                            }`}
+                            title={s.evidence_quote}
+                          >
+                            {s.step_key.replace(/_/g, ' ')}: {s.suggested_status.replace(/_/g, ' ')}
+                          </span>
+                        ))}
+                        {screenshotAnalysis.feed_suggestions?.map((f, i) => (
+                          <span
+                            key={`feed-${i}`}
+                            className={`text-[10px] font-semibold px-2 py-1 rounded-md ${
+                              f.suggested_status === 'confirmed_clean'
+                                ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                                : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
+                            }`}
+                            title={f.evidence_quote}
+                          >
+                            {f.feed_type}: {f.suggested_status.replace(/_/g, ' ')}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {screenshotInsight && (
+            <div className="pt-2 border-t border-slate-200 dark:border-slate-700 space-y-4">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                <Sparkles className="w-4 h-4 text-blue-500" />
+                <span>Grounded Insight</span>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900/90 rounded-xl p-5 text-sm text-slate-800 dark:text-slate-200 whitespace-pre-wrap leading-relaxed border border-slate-200 dark:border-slate-800 shadow-xs">
+                {screenshotInsight.answer}
+              </div>
+
+              {screenshotInsight.sources?.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                    <BookOpen className="w-4 h-4 text-blue-500" />
+                    <span>Cited directly from Actions Center Domain Playbook</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {screenshotInsight.sources.map((s, i) => (
+                      <SourceCard key={i} source={s} />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 };
 

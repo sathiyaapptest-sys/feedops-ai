@@ -54,7 +54,7 @@ export function EntityMatchAssist() {
   const suggestions: Suggestion[] = result?.suggestions || [];
 
   return (
-    <div className="p-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700">
+    <div className="p-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 md:col-span-2">
       <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2 mb-1">
         <MapPin className="w-5 h-5 text-blue-500" />
         Entity Match Assist
@@ -74,10 +74,10 @@ export function EntityMatchAssist() {
               <MapPin className="w-6 h-6 text-slate-500 mb-1" />
             )}
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              <span className="font-semibold">Click to upload</span> the Entity export (CSV)
+              <span className="font-semibold">Click to upload</span> the Entity export (CSV or TSV)
             </p>
           </div>
-          <input type="file" className="hidden" accept=".csv" onChange={handleFileChange} disabled={uploading} />
+          <input type="file" className="hidden" accept=".csv,.tsv,.txt" onChange={handleFileChange} disabled={uploading} />
         </label>
       </div>
 

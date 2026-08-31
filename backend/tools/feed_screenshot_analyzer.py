@@ -14,6 +14,20 @@ class FeedRowSuggestion(BaseModel):
     observed_at: Optional[str] = Field(None, description="Timestamp text shown on screen for this row, if any")
 
 
+class OnboardingStepSuggestion(BaseModel):
+    step_key: str = Field(
+        description=(
+            "The closest matching step from this fixed list -- match by the "
+            "row's number and label, not just the label text, since Partner "
+            "Portal's own wording can drift slightly: "
+            "setup, feeds_sandbox, conversion_sandbox, sandbox_to_prod_review, "
+            "feeds_production, conversion_production, launch_review"
+        )
+    )
+    suggested_status: str = Field(description="One of: complete, needs_attention -- read from the row's own color/marker (green check vs red warning), not inferred from position")
+    evidence_quote: str = Field(description="The visible label and status text for this row, verbatim, e.g. 'Feeds ready in Sandbox -- Needs attention'")
+
+
 class FeedScreenshotAnalysis(BaseModel):
     screen_type: str = Field(description="One of: ingestion_history, task_rollup, onboarding_plan, other")
     summary: str = Field(description="1-3 sentence plain-language summary of what this screen shows, always populated")
@@ -21,6 +35,13 @@ class FeedScreenshotAnalysis(BaseModel):
     feed_suggestions: List[FeedRowSuggestion] = Field(
         default_factory=list,
         description="Per-feed-type accept/reject suggestions. MUST stay empty unless screen_type is 'ingestion_history'.",
+    )
+    onboarding_step_suggestions: List[OnboardingStepSuggestion] = Field(
+        default_factory=list,
+        description=(
+            "One entry per visible numbered step row (there are normally 7). "
+            "MUST stay empty unless screen_type is 'onboarding_plan'."
+        ),
     )
 
 
@@ -32,9 +53,13 @@ class FeedScreenshotAnalyzer:
     mark when the screenshot is the Ingestion History table, which is the one
     screen with real per-batch pass/fail rows; other screens (task rollups,
     the onboarding plan) carry aggregate/cadence signals that don't map to a
-    single batch, so they get explanation only. Suggestions are advisory --
-    the caller must still route them through a human confirmation step (the
-    existing Mark Accepted/Rejected buttons), never write status directly.
+    single batch, so they get explanation only -- except the Onboarding Plan
+    screen itself, which directly shows this app's own 7 journey steps
+    (colored numbered rows), so that one DOES get a structured per-step
+    complete/needs_attention suggestion. Suggestions are advisory -- the
+    caller must still route them through a human confirmation step (the
+    existing Mark Accepted/Rejected buttons, or the onboarding journey's own
+    self-attest buttons), never write status directly.
     """
 
     def __init__(self):
@@ -86,6 +111,27 @@ class FeedScreenshotAnalyzer:
         from the row. For every other screen_type, feed_suggestions MUST be
         an empty list -- do not infer a batch-level accept/reject from an
         aggregate or unrelated screen.
+
+        Only when screen_type is "onboarding_plan" (a numbered list, normally
+        7 rows, each with a colored status marker -- green check for done,
+        red warning triangle for needs attention -- and a label like "Feeds
+        ready in Sandbox" or "Launch Review"), populate
+        onboarding_step_suggestions: one entry per visible row, with
+        step_key mapped to the closest match from this fixed list (in this
+        order, matching the row numbers 1-7):
+          1. setup
+          2. feeds_sandbox ("Feeds ready in Sandbox")
+          3. conversion_sandbox ("Conversion Tracking in Sandbox")
+          4. sandbox_to_prod_review ("Sandbox to Production Review" / "Sandbox-to-Production Review")
+          5. feeds_production ("Feeds ready in Production")
+          6. conversion_production ("Conversion Tracking in Production")
+          7. launch_review ("Launch Review")
+        Read suggested_status directly from that row's own color/marker --
+        green/check/"Complete" -> "complete", red/warning/"Needs attention"
+        -> "needs_attention". Never guess a row's status from its position or
+        from other rows; only include a row you can actually read the marker
+        for. For every other screen_type, onboarding_step_suggestions MUST be
+        an empty list.
         """
 
         text, _ = generate_content_with_cascade(

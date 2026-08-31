@@ -38,7 +38,19 @@ def slugify_store_id(org_id: str, name: str) -> str:
 
 
 REQUIRED_CANONICAL_FIELDS = {"name", "address"}
-OPTIONAL_CANONICAL_FIELDS = {"telephone", "action_link"}
+# service_hours/lead_time/service_types feed the service feed (see
+# feed_compiler.py's _build_service_rows); delivery/pickup lead time in hours
+# is a separate pair of columns some aggregator exports use instead of one
+# lead_time_minutes column -- excel_parser.py's post-processing reconciles
+# whichever of the two shows up into the single lead_time_minutes the
+# compiler expects. All optional: a merchant missing any of these still gets
+# an entity + action feed row, just no service feed row (feed_compiler.py's
+# existing "omit, don't invent" rule).
+OPTIONAL_CANONICAL_FIELDS = {
+    "telephone", "action_link", "vendor_id", "latitude", "longitude",
+    "service_types", "lead_time_minutes", "delivery_lead_time_hours",
+    "pickup_lead_time_hours", "service_hours",
+}
 
 # Known column-name aliases per canonical field, matched case-insensitively
 # after collapsing punctuation/whitespace.
@@ -50,6 +62,17 @@ FIELD_ALIASES: Dict[str, List[str]] = {
         "action link", "order url", "order link", "website", "ordering url",
         "action url", "action_url", "store url", "store link", "landing page", "checkout url"
     ],
+    "vendor_id": ["vendor id", "external id", "external vendor id", "pos id", "source id"],
+    "latitude": ["latitude", "lat"],
+    "longitude": ["longitude", "lng", "long"],
+    "service_types": [
+        "service types", "service type", "ordering types", "ordering type",
+        "fulfillment types", "fulfillment type"
+    ],
+    "lead_time_minutes": ["lead time minutes", "lead time (minutes)", "leadtime minutes"],
+    "delivery_lead_time_hours": ["delivery lead time hrs", "delivery lead time hours", "delivery lead time"],
+    "pickup_lead_time_hours": ["pickup lead time hrs", "pickup lead time hours", "pickup lead time"],
+    "service_hours": ["service hours", "hours", "opening hours", "business hours"],
 }
 
 

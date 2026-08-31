@@ -54,9 +54,14 @@ function formatWhen(created_at?: string) {
 
 interface FeedHealthProps {
   environment: 'sandbox' | 'production';
+  /** Bumped by the parent whenever Feed Status records a mark -- this card
+   * only fetched on its own mount before, so a mark there wouldn't show up
+   * here until some unrelated remount (a page nav, a refresh) happened to
+   * trigger one; this makes it reload right away instead. */
+  refreshSignal?: number;
 }
 
-export function FeedHealth({ environment }: FeedHealthProps) {
+export function FeedHealth({ environment, refreshSignal }: FeedHealthProps) {
   const [batches, setBatches] = useState<Batch[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
@@ -90,7 +95,7 @@ export function FeedHealth({ environment }: FeedHealthProps) {
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, refreshSignal]);
 
   const uploadLocked = environment === 'production' && !productionUnlocked;
 

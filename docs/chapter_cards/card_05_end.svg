@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1220"/>
+      <stop offset="100%" stop-color="#1a1330"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="42%" r="45%">
+      <stop offset="0%" stop-color="#a48cf5" stop-opacity="0.22"/>
+      <stop offset="55%" stop-color="#a48cf5" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#a48cf5" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1920" height="1080" fill="url(#bgGrad)"/>
+  <rect x="0" y="0" width="1920" height="1080" fill="url(#glow)"/>
+
+  <!-- scattered accent dots, symmetric texture -->
+  <g opacity="0.85">
+    <circle cx="220" cy="180" r="5" fill="#f45b69"/>
+    <circle cx="1700" cy="180" r="5" fill="#5fd996"/>
+    <circle cx="150" cy="420" r="4" fill="#46c9e3"/>
+    <circle cx="1770" cy="420" r="4" fill="#f0ac3f"/>
+    <circle cx="260" cy="860" r="6" fill="#a48cf5"/>
+    <circle cx="1660" cy="860" r="6" fill="#4c8bf5"/>
+    <circle cx="120" cy="700" r="4" fill="#5fd996"/>
+    <circle cx="1800" cy="700" r="4" fill="#f45b69"/>
+  </g>
+
+  <!-- centered brand mark: converging-arcs icon (scaled up) -->
+  <g transform="translate(960,340)">
+    <rect x="-56" y="-56" width="112" height="112" rx="26" fill="#12172a"/>
+    <g fill="none" stroke-linecap="round">
+      <circle cx="0" cy="0" r="38" stroke="#46c9e3" stroke-width="6" stroke-dasharray="178.9 59.6" transform="rotate(133)"/>
+      <circle cx="0" cy="0" r="26" stroke="#a48cf5" stroke-width="6" stroke-dasharray="124.6 41.5" transform="rotate(133)"/>
+      <circle cx="0" cy="0" r="14.5" stroke="#5fd996" stroke-width="6" stroke-dasharray="68.4 22.8" transform="rotate(133)"/>
+    </g>
+    <circle cx="0" cy="0" r="6" fill="#f0ac3f"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="960" y="500" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="96"
+        fill="#f5f6fa" text-anchor="middle">FeedOps AI</text>
+
+  <!-- tagline -->
+  <text x="960" y="560" font-family="Menlo, 'PT Mono', 'Andale Mono', monospace" font-size="24" letter-spacing="3"
+        fill="#9aa1b4" text-anchor="middle">GOOGLE ACTIONS CENTER &#183; ORDERING REDIRECT, AUTOMATED</text>
+
+  <!-- accent rule -->
+  <rect x="890" y="610" width="140" height="5" rx="2.5" fill="#a48cf5" transform="translate(-70,0)"/>
+
+  <!-- hackathon credit -->
+  <text x="960" y="700" font-family="Menlo, 'PT Mono', 'Andale Mono', monospace" font-weight="700" font-size="26" letter-spacing="4"
+        fill="#a48cf5" text-anchor="middle">BUILT FOR ALL THINGS AGENTIC HACKATHON</text>
+  <text x="960" y="740" font-family="Menlo, 'PT Mono', 'Andale Mono', monospace" font-size="22" letter-spacing="4"
+        fill="#6b7280" text-anchor="middle">TASKMASTER CATEGORY</text>
+
+  <!-- footer -->
+  <text x="960" y="960" font-family="Menlo, 'PT Mono', 'Andale Mono', monospace" font-size="18" letter-spacing="3"
+        fill="#4b5164" text-anchor="middle">THANK YOU</text>
+</svg>

@@ -28,7 +28,7 @@ export function StepNav(props: StepNavProps) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="sticky top-0 z-10 pb-3 bg-slate-50 dark:bg-slate-900 flex items-center justify-between flex-wrap gap-3">
         <Link
           to="/aggregator/dashboard"
           className="text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-white flex items-center gap-1.5"

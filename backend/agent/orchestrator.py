@@ -78,7 +78,7 @@ class FeedOpsOrchestrator:
             agent=self.support_agent, app_name=self.APP_NAME, session_service=self.session_service
         )
 
-    def _build_entity_matcher_agent(self) -> Agent:
+    def _build_entity_matcher_agent(self, model: str = PRIMARY_MODEL) -> Agent:
         """
         Sub-agent for reviewing Places match confidence and grounding ambiguous matches.
 
@@ -89,9 +89,13 @@ class FeedOpsOrchestrator:
         disables automatic function calling for the custom tools when both are present),
         so this agent is deliberately single-purpose: judge the pre-computed match and,
         if it's ambiguous, use Search to verify it.
+
+        `model` defaults to PRIMARY_MODEL so every existing call site (__init__'s
+        one-time self.entity_matcher) is unaffected; _run_tool_agent's cascade
+        retry passes each fallback model explicitly, one attempt at a time.
         """
         return Agent(
-            model=PRIMARY_MODEL,
+            model=model,
             name="entity_matcher_agent",
             description="Reviews Places match confidence for a merchant and grounds ambiguous matches via Search.",
             tools=[google_search],
@@ -110,10 +114,11 @@ class FeedOpsOrchestrator:
             """,
         )
 
-    def _build_schema_auditor_agent(self) -> Agent:
-        """Sub-agent for Actions Center JSON feed validation and deep-link auditing."""
+    def _build_schema_auditor_agent(self, model: str = PRIMARY_MODEL) -> Agent:
+        """Sub-agent for Actions Center JSON feed validation and deep-link auditing.
+        `model` defaults to PRIMARY_MODEL for the same reason as _build_entity_matcher_agent."""
         return Agent(
-            model=PRIMARY_MODEL,
+            model=model,
             name="schema_auditor_agent",
             description="Compiles and audits Actions Center feed bundles for schema and pricing compliance.",
             tools=[self.compiler.compile_merchant_feed, retrieve_playbook_context],
@@ -210,39 +215,123 @@ class FeedOpsOrchestrator:
 
         return {"answer": "No answer available at this time.", "sources": []}
 
-    async def _run_tool_agent(self, runner: Runner, session_prefix: str, prompt: str):
-        """
-        Runs an ADK agent through a real session, and captures both its final narration
-        and the raw return value of every tool call it made, keyed by tool name -- an
-        agent may hold more than one function tool (e.g. SchemaAuditorAgent has both
-        compile_merchant_feed and retrieve_playbook_context), and keying by name avoids
-        one tool's result silently clobbering another's if the model calls both.
+    async def explain_screenshot_insight(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Ask FeedOps' "Screenshot Insights" tab: grounds a FeedScreenshotAnalyzer
+        read (screen_type + whatever rows the vision model detected) against the
+        real onboarding playbook -- same RAG retrieval + synthesis path as
+        ask_support, except the query is built from what the vision model saw on
+        screen instead of typed chat text. Advisory only, same as the analyzer
+        itself -- never writes an onboarding step or feed status."""
+        screen_type = analysis.get("screen_type", "other")
+        summary = analysis.get("summary", "")
+        step_bits = [
+            f"{s.get('step_key')} ({s.get('suggested_status')})"
+            for s in analysis.get("onboarding_step_suggestions") or []
+        ]
+        feed_bits = [
+            f"{f.get('feed_type')} feed ({f.get('suggested_status')})"
+            for f in analysis.get("feed_suggestions") or []
+        ]
+        query = " ".join(filter(None, [screen_type, summary, *step_bits, *feed_bits]))
 
-        Returns (narration: str, tool_results: Dict[str, Any]). tool_results is {} both
-        when the agent never called any tool and when the Gemini call itself failed (e.g.
-        no/exhausted API key) -- callers should fall back to calling the underlying tool
-        function directly in either case, the same graceful-degradation pattern used for
-        the EntityMatcherAgent.
-        """
-        session_id = f"{session_prefix}-{int(time.time())}"
+        direct_sources = retrieve_playbook_context(query)
+        context_str = (
+            "\n\n".join([f"### {s['title']}\n{s['content']}" for s in direct_sources])
+            if direct_sources
+            else "No direct playbook section found."
+        )
+        prompt = (
+            "You are the FeedOps Support Agent for Google Actions Center (Ordering Redirect).\n"
+            "A user just uploaded a Partner Portal screenshot. Here is what the vision model detected:\n"
+            f"Screen type: {screen_type}\n"
+            f"Summary: {summary}\n"
+            + (f"Detected onboarding steps: {'; '.join(step_bits)}\n" if step_bits else "")
+            + (f"Detected feed rows: {'; '.join(feed_bits)}\n" if feed_bits else "")
+            + f"\nPlaybook Context:\n{context_str}\n\n"
+            "Explain what this screen means and what the user should do next, grounded specifically in "
+            "the playbook context above -- be concrete to what was actually detected, not generic. Cite "
+            "the relevant playbook section(s) by name. Keep it under 6 sentences."
+        )
+
         try:
-            await self.session_service.create_session(
-                app_name=self.APP_NAME, user_id="pipeline", session_id=session_id
+            client = genai.Client()
+            answer_text, model_used = generate_content_with_cascade(
+                client=client,
+                contents=prompt,
             )
-            message = genai_types.Content(role="user", parts=[genai_types.Part(text=prompt)])
-
-            narration = ""
-            tool_results: Dict[str, Any] = {}
-            async for event in runner.run_async(user_id="pipeline", session_id=session_id, new_message=message):
-                for function_response in event.get_function_responses():
-                    tool_results[function_response.name] = function_response.response
-                if event.is_final_response() and event.content and event.content.parts:
-                    narration = event.content.parts[0].text or narration
-
-            return narration, tool_results
+            if answer_text:
+                logger.info(f"explain_screenshot_insight answered via {model_used} with {len(direct_sources)} sources.")
+                return {"answer": answer_text, "sources": direct_sources}
         except Exception as e:
-            logger.warning(f"Agent run '{session_prefix}' failed, falling back to direct tool call: {e}")
-            return f"(agent unavailable: {e})", {}
+            logger.warning(f"Screenshot insight cascade error ({e}), returning direct playbook excerpt.")
+            if direct_sources:
+                top_sec = direct_sources[0]
+                clean_excerpt = (
+                    f"**{top_sec['title']} (Official Actions Center Rulebook):**\n\n"
+                    f"{top_sec['content']}"
+                )
+                return {"answer": clean_excerpt, "sources": direct_sources}
+
+        return {"answer": "No answer available at this time.", "sources": []}
+
+    async def _run_tool_agent(self, agent_builder, session_prefix: str, prompt: str):
+        """
+        Runs an ADK agent through a real session, retrying down the model cascade
+        (get_model_cascade(): gemini-3.7 -> 3.6 -> 3.5 -> 3.1-lite -> gemma-4-31b-it)
+        if a model call fails -- the same 429/503/404 failure modes
+        generate_content_with_cascade already retries for the non-ADK Gemini calls
+        elsewhere in this app. Previously this only ever tried PRIMARY_MODEL once
+        and gave up (confirmed live: a real 429 quota error produced a permanent
+        placeholder string with no retry at all).
+
+        `agent_builder(model: str) -> Agent` constructs a fresh Agent for one
+        attempt -- ADK binds model at construction, so the Agent (and its Runner)
+        can't be reused across models; a new one is built per attempt instead.
+
+        Captures both the final narration and the raw return value of every tool
+        call an agent made, keyed by tool name -- an agent may hold more than one
+        function tool (e.g. SchemaAuditorAgent has both compile_merchant_feed and
+        retrieve_playbook_context), and keying by name avoids one tool's result
+        silently clobbering another's if the model calls both.
+
+        Returns (narration: str, tool_results: Dict[str, Any]). When the FIRST
+        (primary) model succeeds -- the common case -- this returns exactly what
+        the old single-attempt version did, byte for byte. tool_results is {}
+        both when the agent never called any tool and when every model in the
+        cascade failed -- callers should fall back to calling the underlying tool
+        function directly in either case, the same graceful-degradation contract
+        as before this cascade was added.
+        """
+        cascade = get_model_cascade()
+        last_error: Optional[Exception] = None
+        for model in cascade:
+            session_id = f"{session_prefix}-{model.replace('.', '_').replace('/', '_')}-{int(time.time())}"
+            try:
+                agent = agent_builder(model)
+                runner = Runner(agent=agent, app_name=self.APP_NAME, session_service=self.session_service)
+                await self.session_service.create_session(
+                    app_name=self.APP_NAME, user_id="pipeline", session_id=session_id
+                )
+                message = genai_types.Content(role="user", parts=[genai_types.Part(text=prompt)])
+
+                narration = ""
+                tool_results: Dict[str, Any] = {}
+                async for event in runner.run_async(user_id="pipeline", session_id=session_id, new_message=message):
+                    for function_response in event.get_function_responses():
+                        tool_results[function_response.name] = function_response.response
+                    if event.is_final_response() and event.content and event.content.parts:
+                        narration = event.content.parts[0].text or narration
+
+                if model != cascade[0]:
+                    logger.info(f"Agent '{session_prefix}' recovered via fallback model '{model}'.")
+                return narration, tool_results
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Agent '{session_prefix}' failed on model '{model}': {e}")
+                continue
+
+        logger.warning(f"Agent run '{session_prefix}' failed on every cascade model ({cascade}), falling back to direct tool call: {last_error}")
+        return f"(agent unavailable: {last_error})", {}
 
     async def _run_entity_matcher_agent(self, merchant_data: Dict[str, Any], match_result: Dict[str, Any]) -> str:
         """
@@ -250,33 +339,22 @@ class FeedOpsOrchestrator:
         deterministic Places match above and, if it judges the match too weak, invoke Google
         Search grounding or draft a GBP record itself via its own tools.
 
-        Falls back to a static note (rather than raising) if the Gemini call fails -- e.g. no
-        API key configured yet -- so the deterministic pipeline below can still complete.
+        Shares _run_tool_agent's model-cascade retry (one implementation, not two
+        that could drift) -- falls back to a static note only if every model in
+        the cascade fails, so the deterministic pipeline below can still complete.
         """
-        session_id = f"onboard-{merchant_data.get('store_id', 'unknown')}-{int(time.time())}"
-        try:
-            await self.session_service.create_session(
-                app_name=self.APP_NAME, user_id="pipeline", session_id=session_id
-            )
-            prompt = (
-                f"Merchant: {merchant_data.get('name')}\n"
-                f"Address: {merchant_data.get('address')}\n"
-                f"Deterministic Places match result: {json.dumps(match_result)}\n"
-                "Review this match per your instructions and give your recommendation."
-            )
-            message = genai_types.Content(role="user", parts=[genai_types.Part(text=prompt)])
-
-            final_text = ""
-            async for event in self.entity_matcher_runner.run_async(
-                user_id="pipeline", session_id=session_id, new_message=message
-            ):
-                if event.is_final_response() and event.content and event.content.parts:
-                    final_text = event.content.parts[0].text or final_text
-
-            return final_text or "EntityMatcherAgent returned no response."
-        except Exception as e:
-            logger.warning(f"EntityMatcherAgent run failed, continuing with deterministic result only: {e}")
-            return f"(EntityMatcherAgent unavailable: {e})"
+        prompt = (
+            f"Merchant: {merchant_data.get('name')}\n"
+            f"Address: {merchant_data.get('address')}\n"
+            f"Deterministic Places match result: {json.dumps(match_result)}\n"
+            "Review this match per your instructions and give your recommendation."
+        )
+        narration, _ = await self._run_tool_agent(
+            self._build_entity_matcher_agent,
+            f"onboard-{merchant_data.get('store_id', 'unknown')}",
+            prompt,
+        )
+        return narration or "EntityMatcherAgent returned no response."
 
     async def _persist_merchant(
         self, merchant_data: Dict[str, Any], match_result: Dict[str, Any], status: str, agent_reasoning: str = ""
@@ -465,7 +543,7 @@ class FeedOpsOrchestrator:
             "feed bundle and audit it."
         )
         audit_narration, tool_results = await self._run_tool_agent(
-            self.schema_auditor_runner, f"audit-{store_id}", audit_prompt
+            self._build_schema_auditor_agent, f"audit-{store_id}", audit_prompt
         )
         feed_bundle = tool_results.get("compile_merchant_feed")
         agent_unreachable = feed_bundle is None

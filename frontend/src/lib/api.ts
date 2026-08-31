@@ -118,10 +118,13 @@ export const api = {
       sftp_username_sandbox?: string;
       sftp_username_production?: string;
       conversion_partner_id?: string;
+      production_rwg_tokens?: string;
       portal_status_sandbox?: string;
       portal_status_production?: string;
       sandbox_to_prod_review_status?: string;
       launch_review_status?: string;
+      feeds_sandbox_override_status?: string;
+      feeds_production_override_status?: string;
       menu_feeds_enabled?: boolean;
       generic_sftp_username_sandbox?: string;
       generic_sftp_username_production?: string;
@@ -231,6 +234,19 @@ export const api = {
     const token = await getIdToken();
     const res = await fetch(`${API_BASE_URL}/api/feeds/trigger-pipeline?environment=${environment}`, {
       method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.json();
+  },
+  /** Compiles the current roster into the exact entity/action/service JSON a
+   * real push would send, without touching SFTP -- lets an aggregator
+   * eyeball the real compiled output before clicking Upload Now, the bulk
+   * equivalent of the merchant self-service Services page's feed inspector. */
+  previewFeeds: async (): Promise<{
+    status: string; message?: string; merchants_previewed?: number; excluded_closed?: number; feeds?: Record<string, any>;
+  }> => {
+    const token = await getIdToken();
+    const res = await fetch(`${API_BASE_URL}/api/feeds/preview`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     return res.json();
@@ -353,6 +369,21 @@ export const api = {
     const formData = new FormData();
     formData.append('file', file);
     const res = await fetch(`${API_BASE_URL}/api/upload/feed-screenshot`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    });
+    return res.json();
+  },
+  /** Ask FeedOps' "Screenshot Insights" tab: reads a Partner Portal screenshot
+   * (same analyzer as analyzeFeedScreenshot) and grounds what it detected
+   * against the real onboarding playbook via RAG -- returns both the raw
+   * vision read and a cited, synthesized explanation. Advisory only. */
+  getScreenshotInsight: async (file: File) => {
+    const token = await getIdToken();
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(`${API_BASE_URL}/api/support/screenshot-insight`, {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,

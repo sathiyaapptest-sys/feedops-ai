@@ -9,13 +9,13 @@
   <rect x="0" y="0" width="512" height="512" rx="108" fill="url(#bgGrad)"></rect>
 
   <g fill="none" stroke-linecap="round">
-    <circle cx="320" cy="320" r="176" stroke="#46c9e3" stroke-width="20"
-      stroke-dasharray="829.4 276.5" transform="rotate(133 320 320)"></circle>
-    <circle cx="320" cy="320" r="122" stroke="#a48cf5" stroke-width="20"
-      stroke-dasharray="574.9 191.6" transform="rotate(133 320 320)"></circle>
-    <circle cx="320" cy="320" r="68" stroke="#5fd996" stroke-width="20"
-      stroke-dasharray="320.4 106.8" transform="rotate(133 320 320)"></circle>
+    <circle cx="256" cy="256" r="176" stroke="#46c9e3" stroke-width="20"
+      stroke-dasharray="829.4 276.5" transform="rotate(133 256 256)"></circle>
+    <circle cx="256" cy="256" r="122" stroke="#a48cf5" stroke-width="20"
+      stroke-dasharray="574.9 191.6" transform="rotate(133 256 256)"></circle>
+    <circle cx="256" cy="256" r="68" stroke="#5fd996" stroke-width="20"
+      stroke-dasharray="320.4 106.8" transform="rotate(133 256 256)"></circle>
   </g>
 
-  <circle cx="320" cy="320" r="26" fill="#f0ac3f"></circle>
+  <circle cx="256" cy="256" r="26" fill="#f0ac3f"></circle>
 </svg>

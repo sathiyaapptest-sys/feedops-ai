@@ -111,6 +111,14 @@ Both exit non-zero on failure, so Cloud Run Job execution failures surface in
 Cloud Monitoring / Cloud Scheduler's own failure notifications without extra
 wiring.
 
+**One job per cadence covers both environments, automatically.** Omit
+`--environment` (pass `--org-id` instead, or set `FEEDOPS_ORG_ID`) and each
+run always does sandbox, then checks that org's Sandbox-to-Production Review
+status in Firestore and also runs production if it's approved -- no second
+`*-production` job/trigger to create by hand once review passes, and nothing
+touches production before it's actually approved. Pass `--environment`
+explicitly only to force a single environment (e.g. for a manual test run).
+
 ## One-time setup
 
 ```bash
@@ -142,10 +150,12 @@ gcloud secrets create google-sftp-key --data-file=~/.ssh/google_actions_center
 ## Create the two Cloud Run Jobs
 
 ```bash
+export FEEDOPS_ORG_ID=your-org-id   # the Firebase uid of the aggregator account
+
 gcloud run jobs create feedops-daily-push \
   --image=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/scheduled-tasks:latest \
   --region=$REGION \
-  --args="--job=daily,--environment=sandbox" \
+  --args="--job=daily,--org-id=$FEEDOPS_ORG_ID" \
   --set-secrets="GEMINI_API_KEY=gemini-api-key:latest,GOOGLE_SFTP_KEY_PATH=google-sftp-key:latest" \
   --max-retries=2 \
   --task-timeout=600
@@ -153,16 +163,16 @@ gcloud run jobs create feedops-daily-push \
 gcloud run jobs create feedops-weekly-sweep \
   --image=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/scheduled-tasks:latest \
   --region=$REGION \
-  --args="--job=weekly,--environment=sandbox" \
+  --args="--job=weekly,--org-id=$FEEDOPS_ORG_ID" \
   --set-secrets="GEMINI_API_KEY=gemini-api-key:latest" \
   --max-retries=2 \
   --task-timeout=300
 ```
 
-Once Launch Review passes production (playbook section 9), create matching
-`*-production` jobs with `--environment=production` and the production SFTP
-username/key -- don't just flip the existing sandbox jobs, run both cadences
-in both environments per the playbook.
+Both always push/sweep sandbox. Once Sandbox-to-Production Review is
+approved for `$FEEDOPS_ORG_ID` (self-attested on the Dashboard, or via the
+Portal-screenshot suggestion), the same two jobs pick up production
+automatically on their next scheduled run -- nothing to redeploy.
 
 ## Create the two Cloud Scheduler triggers
 

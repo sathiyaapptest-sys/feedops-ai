@@ -23,11 +23,33 @@ open/close data exists.
 import json
 import logging
 import os
+import random
 import re
 import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("feedops.feed_compiler")
+
+
+def _shard_metadata(timestamp: int) -> Dict[str, Any]:
+    """
+    Every fileset -- even a single-shard one -- needs this block on its data
+    file or Google's ingestion sits at "Waiting for remaining shards"
+    indefinitely: shard_number/total_shards is how Google knows a shard set
+    is complete, and PROCESS_AS_COMPLETE is what triggers ingestion once it
+    is (confirmed live: without this block, entity/action/service all sat in
+    that state even though a correct, matching FilesetDescriptor -- the
+    generation_timestamp/name/data_file fields -- had already resolved the
+    earlier "cannot be parsed" failure). This compiler never actually shards
+    a feed across multiple files, so shard_number is always 0 of 1.
+    """
+    return {
+        "processing_instruction": "PROCESS_AS_COMPLETE",
+        "shard_number": 0,
+        "total_shards": 1,
+        "nonce": random.randint(100_000, 999_999),
+        "generation_timestamp": timestamp,
+    }
 
 
 def _slugify(value: str) -> str:
@@ -208,7 +230,13 @@ class ActionsCenterFeedCompiler:
         service_rows: List[Dict[str, Any]] = []
 
         for merchant in merchant_data_list:
-            raw_id = merchant.get("entity_id") or merchant.get("id") or merchant.get("store_id")
+            # vendor_id (a bulk upload's own aggregator-supplied id) takes
+            # priority over the internal store_id slug -- Google's system may
+            # already have this merchant registered (and possibly Matched)
+            # under vendor_<vendor_id> from an earlier push; using anything
+            # else here would stop updating that entity and start minting an
+            # unmatched duplicate instead.
+            raw_id = merchant.get("entity_id") or merchant.get("vendor_id") or merchant.get("id") or merchant.get("store_id")
             entity_id = merchant["entity_id"] if merchant.get("entity_id") else f"vendor_{raw_id}"
 
             location = self._build_location(merchant)
@@ -262,14 +290,14 @@ class ActionsCenterFeedCompiler:
             prefix = FEED_DATA_FILE_PREFIXES[feed_type]
             data_path = os.path.join(self.output_dir, f"{prefix}_{timestamp}_0001.json")
             with open(data_path, "w") as f:
-                json.dump({"data": rows}, f)
+                json.dump({"metadata": _shard_metadata(timestamp), "data": rows}, f)
 
             desc_path = os.path.join(self.output_dir, f"{prefix}_{timestamp}.filesetdesc.json")
             with open(desc_path, "w") as f:
                 json.dump({
-                    "name": FEED_DESCRIPTOR_NAMES[feed_type],
                     "generation_timestamp": timestamp,
-                    "record_count": len(rows),
+                    "name": FEED_DESCRIPTOR_NAMES[feed_type],
+                    "data_file": [os.path.basename(data_path)],
                 }, f, indent=2)
 
             feeds_generated[feed_type] = data_path
@@ -388,14 +416,14 @@ class ActionsCenterFeedCompiler:
 
         data_path = os.path.join(self.output_dir, f"{MENU_FEED_FILE_PREFIX}_{timestamp}_0001.json")
         with open(data_path, "w") as f:
-            json.dump({"data": rows}, f)
+            json.dump({"metadata": _shard_metadata(timestamp), "data": rows}, f)
 
         desc_path = os.path.join(self.output_dir, f"{MENU_FEED_FILE_PREFIX}_{timestamp}.filesetdesc.json")
         with open(desc_path, "w") as f:
             json.dump({
-                "name": MENU_FEED_DESCRIPTOR_NAME,
                 "generation_timestamp": timestamp,
-                "record_count": len(rows),
+                "name": MENU_FEED_DESCRIPTOR_NAME,
+                "data_file": [os.path.basename(data_path)],
             }, f, indent=2)
 
         return {"menu": data_path, "menu_descriptor": desc_path}

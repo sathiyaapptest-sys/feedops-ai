@@ -119,14 +119,27 @@ See [deploy/README.md](deploy/README.md) for the full `gcloud run deploy` comman
 - **`BulkUpload.tsx`** now persists valid rows and surfaces validation errors, but doesn't yet expose an organization selector in the UI — bulk uploads without an explicit `org_id` fall into a shared `unknown` bucket.
 - **`Menu.tsx`'s XLSX-upload path** expects a different response shape than `/api/upload/spreadsheet` actually returns (pre-existing).
 - **The Services page's live agent stream is canned** — the onboarding page's stream is real; this one was deliberately left out of scope.
-- **No architecture diagram yet** — in progress.
-- **No demo video yet** — in progress.
 - **A real Firebase project was never wired up during development** — see [Getting started](#getting-started); the frontend has been running on dummy fallback config, so sign-in has not been exercised against a real Firebase Auth backend until deployment.
 - Several manual, human-only steps exist because **Google exposes no API for them**, not because we didn't automate them: Partner Portal setup, launch review, and confirming a feed was actually *accepted* (a clean SFTP upload only proves delivery). FeedOps AI tracks these as explicit self-report states (see Feed Health) rather than pretending to check them automatically.
 
 ## Project timeline
 
 Started **2026-08-23**. The initial scaffold was inherited and largely non-functional (a fabricated `google.antigravity` import, only 1 of 3 agents actually calling Gemini, feeds shaped as generic JSON-LD instead of Google's real proto, conversion pings posting to placeholder URLs). Every subsequent commit replaced a specific piece of that with a real, verified implementation — see the commit history for the section-by-section account.
+
+## Demo
+
+🎬 **[Watch the Demo Video on YouTube](#)** *(link to be updated after upload)*
+
+🏆 **[Devpost Submission](#)** *(link to be updated after submission)*
+
+## Credits & Acknowledgments
+
+- **Architected & Developed by:** Sathiya Prasad A
+- **Special Thanks:** Ajla Drici, CEO of Caterlush — this project began with her request to help set up Google's Ordering Redirect integration for her business. In doing that work, I discovered the real-world operational pain, and this hackathon inspired me to think beyond and engineer the autonomous solution that FeedOps AI is today.
+- **Google Cloud DevRel & Webinar Team:** Annie Wang, Christina Lin, Romin Irani
+- **Live Q&A Mentors & Hosts:** Christina Lin, Darlyze Calixte, Willie Tumey
+- **Core AI:** Google ADK, Gemini 3.6 Flash, Gemma 4, Google Places API, Google Cloud Run
+- **Development Tools:** Antigravity IDE, Claude & Gemini, Google Veo, Google Lyria, QuickTime Player, CapCut Desktop
 
 ## License / disclosures
 

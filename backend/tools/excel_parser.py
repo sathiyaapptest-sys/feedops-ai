@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -8,6 +9,115 @@ from backend.tools.data_adapter import DataSourceAdapter, infer_adapter, slugify
 
 logger = logging.getLogger("feedops.excel_parser")
 
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+# Both 3-letter ("Mon") and full ("Monday") spellings resolve to the full
+# name feed_compiler.py's _build_service_rows expects (it upper()s `day`
+# straight into Google's DayOfWeek enum, e.g. "MONDAY").
+_DAY_ALIASES = {name[:3].lower(): name for name in DAY_NAMES}
+_DAY_ALIASES.update({name.lower(): name for name in DAY_NAMES})
+
+# feed_compiler.py's VALID_SERVICE_TYPES is {DELIVERY, TAKEOUT, DINE_IN} --
+# maps the free-text spellings aggregator exports actually use onto that enum.
+_SERVICE_TYPE_ALIASES = {
+    "delivery": "DELIVERY",
+    "pickup": "TAKEOUT",
+    "pick up": "TAKEOUT",
+    "takeout": "TAKEOUT",
+    "take out": "TAKEOUT",
+    "takeaway": "TAKEOUT",
+    "dine in": "DINE_IN",
+    "dinein": "DINE_IN",
+}
+
+_TIME_RANGE_RE = re.compile(
+    r"^([A-Za-z]+)(?:\s*-\s*([A-Za-z]+))?\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$"
+)
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_service_types(raw: Optional[str]) -> Optional[List[str]]:
+    if not raw:
+        return None
+    types: List[str] = []
+    for part in str(raw).split(","):
+        key = re.sub(r"[^a-z ]+", "", part.strip().lower())
+        mapped = _SERVICE_TYPE_ALIASES.get(key)
+        if mapped and mapped not in types:
+            types.append(mapped)
+    return types or None
+
+
+def _parse_lead_time_minutes(row: Dict[str, Any]) -> Optional[float]:
+    """
+    Prefers an explicit lead_time_minutes column when present. Otherwise
+    reconciles separate delivery/pickup lead-time-in-hours columns (some
+    aggregator exports carry these instead of one minutes column) into the
+    single lead_time_minutes feed_compiler.py's service feed needs -- takes
+    the longer of the two so the quoted lead time is never an under-promise.
+    """
+    direct = _to_float(row.get("lead_time_minutes"))
+    if direct is not None:
+        return direct
+
+    hours_values = [
+        h for h in (
+            _to_float(row.get("delivery_lead_time_hours")),
+            _to_float(row.get("pickup_lead_time_hours")),
+        ) if h is not None
+    ]
+    return max(hours_values) * 60 if hours_values else None
+
+
+def _parse_opening_hours(raw: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    """
+    Parses free-text service-hours strings into feed_compiler.py's expected
+    opening_hours shape ({day, isOpen, openTime, closeTime} per window).
+    Handles a per-day list ("Mon 09:00-17:00; Tue 09:00-17:00"), a day-range
+    shorthand ("Mon-Sun 11:00-23:00"), and split shifts (the same day
+    appearing more than once, e.g. "Wed 11:00-14:30; Wed 18:00-20:00" --
+    both windows are kept). A day never mentioned is simply omitted rather
+    than emitted as a fabricated closed entry -- _build_service_rows already
+    treats an absent day exactly like isOpen: false.
+    """
+    if not raw:
+        return None
+    windows: List[Dict[str, Any]] = []
+    for segment in str(raw).split(";"):
+        segment = segment.strip()
+        if not segment:
+            continue
+        m = _TIME_RANGE_RE.match(segment)
+        if not m:
+            continue
+        start_day, end_day, open_t, close_t = m.groups()
+        start_name = _DAY_ALIASES.get(start_day.strip().lower())
+        if not start_name:
+            continue
+
+        if end_day:
+            end_name = _DAY_ALIASES.get(end_day.strip().lower())
+            if not end_name:
+                day_names = [start_name]
+            else:
+                start_idx, end_idx = DAY_NAMES.index(start_name), DAY_NAMES.index(end_name)
+                day_names = (
+                    DAY_NAMES[start_idx:end_idx + 1] if end_idx >= start_idx
+                    else DAY_NAMES[start_idx:] + DAY_NAMES[:end_idx + 1]
+                )
+        else:
+            day_names = [start_name]
+
+        for day_name in day_names:
+            windows.append({"day": day_name, "isOpen": True, "openTime": open_t, "closeTime": close_t})
+
+    return windows or None
+
 
 class MerchantEntity(BaseModel):
     name: str
@@ -16,6 +126,10 @@ class MerchantEntity(BaseModel):
     action_link: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    vendor_id: Optional[str] = None
+    service_types: Optional[List[str]] = None
+    lead_time_minutes: Optional[float] = None
+    opening_hours: Optional[List[Dict[str, Any]]] = None
 
 
 class MenuItem(BaseModel):
@@ -64,6 +178,16 @@ class SpreadsheetFeedParser:
 
         adapter = self._get_or_infer_adapter(df_merchants.columns.tolist(), org_id)
         rows, validation_errors = validate_and_transform(df_merchants, adapter)
+
+        for row in rows:
+            row["latitude"] = _to_float(row.get("latitude"))
+            row["longitude"] = _to_float(row.get("longitude"))
+            row["service_types"] = _parse_service_types(row.get("service_types"))
+            row["opening_hours"] = _parse_opening_hours(row.pop("service_hours", None))
+            row["lead_time_minutes"] = _parse_lead_time_minutes(row)
+            row.pop("delivery_lead_time_hours", None)
+            row.pop("pickup_lead_time_hours", None)
+
         merchants = [MerchantEntity(**row) for row in rows]
 
         return {

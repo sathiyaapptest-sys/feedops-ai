@@ -26,15 +26,23 @@ class EntityMatchRow(BaseModel):
 
 def parse_entity_csv(file_obj) -> Dict[str, Any]:
     """
-    Parses Google's Entity-match CSV export. Columns observed in a real
-    export: Entity ID, Entity Name, Country, Matched, State (e.g.
+    Parses Google's Entity-match export from Partner Portal -> Inventory ->
+    Entity. Columns observed in a real export: Entity ID, Entity Name,
+    Country, Matched, State (e.g.
     `vendor_101, Sourdough Bakehouse, US, ["Yes",3], INVENTORY_DISABLED`).
+
+    Despite the "CSV" naming throughout this UI, Partner Portal's real
+    download is tab-separated (.tsv), not comma-separated -- confirmed
+    against an actual export. `sep=None, engine="python"` auto-detects the
+    real delimiter (csv.Sniffer under the hood) so this accepts either a
+    genuine .csv or Google's real .tsv without needing to trust the file
+    extension, which browsers/OSes don't always set correctly anyway.
     """
     errors: List[Dict[str, Any]] = []
     try:
-        df = pd.read_csv(file_obj, dtype=str)
+        df = pd.read_csv(file_obj, dtype=str, sep=None, engine="python")
     except Exception as e:
-        return {"rows": [], "errors": [{"row_index": -1, "field": "file", "message": f"Could not parse CSV: {e}"}]}
+        return {"rows": [], "errors": [{"row_index": -1, "field": "file", "message": f"Could not parse file: {e}"}]}
 
     missing = [c for c in _REQUIRED_COLUMNS if c not in df.columns]
     if missing:

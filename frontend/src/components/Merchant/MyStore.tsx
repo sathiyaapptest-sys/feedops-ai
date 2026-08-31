@@ -340,6 +340,15 @@ export function MyStore() {
   const needsGbpDraft = agentEvents.some((e) => e.stage === 'gbp_generation');
   const entityMatchDone = !agentRunning && agentEvents.length > 0;
 
+  // orchestrator.py only reaches gbp_generation at confidence == 0.0 --
+  // storefront genuinely unindexed on Google Maps -- and always computes a
+  // draft (generate_gbp_draft) for it, but this block used to just show a
+  // static message without surfacing it or the actual "go create one" link
+  // (that link only ever existed in the separate ambiguous-match card
+  // below, which a merchant with zero match never reaches).
+  const gbpDraftEvt = agentEvents.find((e) => e.stage === 'gbp_generation');
+  const gbpDraft = gbpDraftEvt?.payload?.draft as any;
+
   const resolutionEvt = agentEvents.find((e) => e.stage === 'entity_resolution');
   const resolutionPayload = resolutionEvt?.payload as any;
   const candidateName = resolutionPayload?.candidate_name || resolutionPayload?.name || '';
@@ -672,14 +681,35 @@ export function MyStore() {
 
           {/* AI Matching Status Alerts */}
           {needsGbpDraft && (
-            <div className="bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 p-4 rounded-xl flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 mt-0.5 shrink-0 text-amber-500" />
-              <div className="flex-1">
-                <h4 className="font-semibold text-sm">Missing Google Business Profile</h4>
-                <p className="text-xs mt-1 opacity-90">
-                  No existing Places match found. EntityMatcherAgent drafted a Google Business Profile onboarding record below.
-                </p>
+            <div className="bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 p-4 rounded-xl space-y-3">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 mt-0.5 shrink-0 text-amber-500" />
+                <div className="flex-1">
+                  <h4 className="font-semibold text-sm">Missing Google Business Profile</h4>
+                  <p className="text-xs mt-1 opacity-90">
+                    No existing Places match found. This storefront isn't indexed on Google Maps yet, so it
+                    can't appear on Google Ordering Redirect until it is.
+                  </p>
+                </div>
               </div>
+
+              {gbpDraft && (
+                <div className="ml-8 p-3 bg-white/60 dark:bg-slate-900/40 rounded-lg border border-amber-500/20 text-[11px] text-slate-600 dark:text-slate-300 space-y-1">
+                  <p className="font-semibold text-slate-700 dark:text-slate-200">Suggested profile details:</p>
+                  <p>Category: {gbpDraft.primaryCategory}</p>
+                  <p>Address: {gbpDraft.standardizedAddress?.addressLines?.[0] || '--'}</p>
+                </div>
+              )}
+
+              <a
+                href="https://business.google.com/create"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-8 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium text-xs shadow-xs transition-colors"
+              >
+                <span>Register on Google Business Profile (GBP)</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
             </div>
           )}
 

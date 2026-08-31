@@ -27,12 +27,20 @@ STATUS_DIAGNOSIS = {
 
 class ConversionSentryTool:
     def __init__(self):
-        # Real sandbox test tokens come from Partner Portal -> conversion-tracking setup
-        # (one per test merchant) -- these are placeholders until you configure the real
-        # ones via GOOGLE_SANDBOX_TEST_TOKENS (comma-separated).
+        # These three are Google's own published sandbox test tokens (Actions
+        # Center > Ordering Redirect > Direct conversion tracking reference
+        # doc, "Test Tokens" section -- global/fixed values, not per-account),
+        # URL-decoded here since the doc shows them as query-string fragments
+        # (?rwg_token=...%3D%3D). The placeholder strings that used to be
+        # here ("rwg_token_test_1" etc.) were never real tokens at all, which
+        # was silently producing HTTP 400s indistinguishable from a bad
+        # conversion_partner_id. GOOGLE_SANDBOX_TEST_TOKENS (comma-separated)
+        # still overrides these if a real deployment needs different ones.
         env_tokens = os.getenv("GOOGLE_SANDBOX_TEST_TOKENS")
         self.sandbox_tokens = env_tokens.split(",") if env_tokens else [
-            "rwg_token_test_1", "rwg_token_test_2", "rwg_token_test_3",
+            "AFd1xnHrJWKcjtriCyB5j3QL0bzbmLdcg1N1f5cJuSNVhteYjuOJz18Au6GIAT0tjHkw6fkUJKcarafV45b3c_gl7uT_o8HMcg==",
+            "AE37R_gte8WCEaytMalsIr9agWQRLuN8199RsVhU2WoRKRvcZ0eBTD8cFvnfUZh-GY0IvY-zjS3W9KWAmy3WDiWXbVvQRZyzMQ==",
+            "AE37R_jmAP-UgWNApkxwdlX5M2z1UBGuUzHZ63YWmRWeTjRJKxfSD1mzJ4joLnB11MHrBULuisjP-9I64LnBJDXyCc_CIJSCPg==",
         ]
         self.health_log: Dict[str, List[Dict[str, Any]]] = {}
 

@@ -55,12 +55,18 @@ const SCREEN_TYPE_NOTE: Record<string, string> = {
 
 interface FeedStatusProps {
   environment: 'sandbox' | 'production';
+  /** Called right after a mark is recorded, so a sibling card (Feed Health)
+   * that reads the same feed_status_* fields can refresh immediately
+   * instead of only picking up the change on its next unrelated remount. */
+  onMarked?: () => void;
 }
 
-export function FeedStatus({ environment }: FeedStatusProps) {
+export function FeedStatus({ environment, onMarked }: FeedStatusProps) {
   const [latest, setLatest] = useState<Batch | null | undefined>(undefined); // undefined = loading
   const [error, setError] = useState<string | null>(null);
   const [markingKey, setMarkingKey] = useState<string | null>(null);
+  const [markConfirmation, setMarkConfirmation] = useState<{ feedType: string; status: 'confirmed_clean' | 'flagged_errors' } | null>(null);
+  const [editingFeedTypes, setEditingFeedTypes] = useState<Set<string>>(new Set());
   const [reuploading, setReuploading] = useState(false);
   const [reuploadResult, setReuploadResult] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
@@ -93,6 +99,7 @@ export function FeedStatus({ environment }: FeedStatusProps) {
   }, [load]);
 
   useEffect(() => {
+    setEditingFeedTypes(new Set());
     if (!latest?.batch_id) {
       setFeedContent(null);
       setFeedContentMissing([]);
@@ -111,14 +118,36 @@ export function FeedStatus({ environment }: FeedStatusProps) {
   const handleMark = async (feedType: 'entity' | 'action' | 'service', status: 'confirmed_clean' | 'flagged_errors') => {
     if (!latest) return;
     setMarkingKey(feedType);
+    setMarkConfirmation(null);
     try {
-      await api.verifyBatchFeed(latest.batch_id, feedType, status);
+      const res = await api.verifyBatchFeed(latest.batch_id, feedType, status);
+      if (res.status === 'error') {
+        setError(res.message || 'Could not record feed status.');
+      } else {
+        setMarkConfirmation({ feedType, status });
+        setTimeout(() => setMarkConfirmation((cur) => (cur?.feedType === feedType ? null : cur)), 4000);
+        setEditingFeedTypes((prev) => {
+          const next = new Set(prev);
+          next.delete(feedType);
+          return next;
+        });
+        onMarked?.();
+      }
       await load();
     } catch (err: any) {
       setError(err.message || 'Could not record feed status.');
     } finally {
       setMarkingKey(null);
     }
+  };
+
+  const toggleEditing = (feedType: string) => {
+    setEditingFeedTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(feedType)) next.delete(feedType);
+      else next.add(feedType);
+      return next;
+    });
   };
 
   const handleScreenshotChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -198,10 +227,18 @@ export function FeedStatus({ environment }: FeedStatusProps) {
             {orderedFeedTypes.map((ft) => {
               const status = latest[`feed_status_${ft}`] || 'pending';
               const suggestion = suggestionFor(ft);
+              const justMarked = markConfirmation?.feedType === ft;
+              const showButtons = status === 'pending' || editingFeedTypes.has(ft);
               return (
                 <div
                   key={ft}
-                  className="p-3 rounded-lg border border-slate-200 dark:border-slate-700 text-sm"
+                  className={`p-3 rounded-lg border text-sm transition-colors ${
+                    justMarked
+                      ? markConfirmation!.status === 'confirmed_clean'
+                        ? 'border-green-400 dark:border-green-600 bg-green-50/60 dark:bg-green-900/10'
+                        : 'border-red-400 dark:border-red-600 bg-red-50/60 dark:bg-red-900/10'
+                      : 'border-slate-200 dark:border-slate-700'
+                  }`}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
@@ -215,26 +252,54 @@ export function FeedStatus({ environment }: FeedStatusProps) {
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleMark(ft as any, 'confirmed_clean')}
-                        disabled={markingKey === ft}
-                        className={`px-2 py-1 text-xs bg-green-100 hover:bg-green-200 text-green-700 dark:bg-green-900/30 dark:text-green-300 rounded disabled:opacity-50 ${
-                          suggestion?.suggested_status === 'confirmed_clean' ? 'ring-2 ring-blue-400' : ''
-                        }`}
-                      >
-                        Mark Accepted
-                      </button>
-                      <button
-                        onClick={() => handleMark(ft as any, 'flagged_errors')}
-                        disabled={markingKey === ft}
-                        className={`px-2 py-1 text-xs bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-900/30 dark:text-red-300 rounded disabled:opacity-50 ${
-                          suggestion?.suggested_status === 'flagged_errors' ? 'ring-2 ring-blue-400' : ''
-                        }`}
-                      >
-                        Mark Rejected
-                      </button>
-                    </div>
+                    {showButtons ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleMark(ft as any, 'confirmed_clean')}
+                          disabled={markingKey === ft}
+                          className={`px-2 py-1 text-xs bg-green-100 hover:bg-green-200 text-green-700 dark:bg-green-900/30 dark:text-green-300 rounded disabled:opacity-50 ${
+                            suggestion?.suggested_status === 'confirmed_clean' ? 'ring-2 ring-blue-400' : ''
+                          }`}
+                        >
+                          Mark Accepted
+                        </button>
+                        <button
+                          onClick={() => handleMark(ft as any, 'flagged_errors')}
+                          disabled={markingKey === ft}
+                          className={`px-2 py-1 text-xs bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-900/30 dark:text-red-300 rounded disabled:opacity-50 ${
+                            suggestion?.suggested_status === 'flagged_errors' ? 'ring-2 ring-blue-400' : ''
+                          }`}
+                        >
+                          Mark Rejected
+                        </button>
+                        {status !== 'pending' && (
+                          <button
+                            onClick={() => toggleEditing(ft)}
+                            className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 underline underline-offset-2"
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-xs font-medium ${
+                            status === 'confirmed_clean'
+                              ? 'text-green-700 dark:text-green-400'
+                              : 'text-red-700 dark:text-red-400'
+                          }`}
+                        >
+                          {status === 'confirmed_clean' ? 'Accepted' : 'Rejected'}
+                        </span>
+                        <button
+                          onClick={() => toggleEditing(ft)}
+                          className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 underline underline-offset-2"
+                        >
+                          Change
+                        </button>
+                      </div>
+                    )}
                   </div>
                   {suggestion && (
                     <p className="mt-2 text-xs text-blue-700 dark:text-blue-300 flex items-start gap-1">
@@ -243,6 +308,20 @@ export function FeedStatus({ environment }: FeedStatusProps) {
                         AI suggests <strong>{suggestion.suggested_status === 'confirmed_clean' ? 'Accepted' : 'Rejected'}</strong>
                         {' '}({Math.round(suggestion.confidence * 100)}% confidence) -- you still need to click to confirm.
                         {' '}"{suggestion.evidence_quote}"
+                      </span>
+                    </p>
+                  )}
+                  {justMarked && (
+                    <p className={`mt-2 text-xs font-medium flex items-center gap-1.5 ${
+                      markConfirmation!.status === 'confirmed_clean' ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'
+                    }`}>
+                      {markConfirmation!.status === 'confirmed_clean' ? (
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        Saved -- {FEED_LABELS[ft] || ft} marked {markConfirmation!.status === 'confirmed_clean' ? 'Accepted' : 'Rejected'}.
                       </span>
                     </p>
                   )}

@@ -528,9 +528,15 @@ class ActivityLogRepository:
         metadata: Optional[Dict[str, Any]] = None,
         duration_ms: Optional[float] = None,
         category: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> Dict[str, Any]:
-        log_id = f"log_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        # `timestamp` lets a backfill reconstruct a historical entry (e.g.
+        # from an existing merchant doc's own feeds_compiled_at) instead of
+        # every entry being stamped with whenever the backfill script
+        # happened to run -- normal runtime logging never passes this.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        log_id = f"log_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        now_iso = timestamp or now.isoformat().replace("+00:00", "Z")
         payload = {
             "log_id": log_id,
             "timestamp": now_iso,
@@ -563,12 +569,14 @@ class ActivityLogRepository:
             return "AI Agents"
         return "System"
 
-    def list_recent(self, limit: int = 100, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_recent(self, limit: int = 100, category: Optional[str] = None, actor: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
             items = self.client.list_all(ACTIVITY_LOGS_COLLECTION)
             items.sort(key=lambda x: x.get("timestamp") or x.get("created_at") or "", reverse=True)
             if category and category != "All":
                 items = [i for i in items if i.get("category") == category]
+            if actor:
+                items = [i for i in items if i.get("actor") == actor]
             return items[:limit]
         except Exception as e:
             logger.warning(f"Could not list activity logs from Firestore: {e}")
