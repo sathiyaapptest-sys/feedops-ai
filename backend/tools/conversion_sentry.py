@@ -27,21 +27,16 @@ STATUS_DIAGNOSIS = {
 
 class ConversionSentryTool:
     def __init__(self):
-        # These three are Google's own published sandbox test tokens (Actions
-        # Center > Ordering Redirect > Direct conversion tracking reference
-        # doc, "Test Tokens" section -- global/fixed values, not per-account),
-        # URL-decoded here since the doc shows them as query-string fragments
-        # (?rwg_token=...%3D%3D). The placeholder strings that used to be
-        # here ("rwg_token_test_1" etc.) were never real tokens at all, which
-        # was silently producing HTTP 400s indistinguishable from a bad
-        # conversion_partner_id. GOOGLE_SANDBOX_TEST_TOKENS (comma-separated)
-        # still overrides these if a real deployment needs different ones.
+        # Per the playbook (section 7): "the portal gives YOU a handful of sandbox
+        # test tokens" under your own account's conversion-tracking setup --
+        # these are issued per-account by the Partner Portal, not a fixed/global
+        # value published in Google's docs. That means they must never be
+        # hardcoded here: set GOOGLE_SANDBOX_TEST_TOKENS (comma-separated) to
+        # your own account's tokens. Unset -> empty list -> the same graceful
+        # "no tokens configured" error dispatch_conversion_ping already raises
+        # for production below, rather than silently using someone else's tokens.
         env_tokens = os.getenv("GOOGLE_SANDBOX_TEST_TOKENS")
-        self.sandbox_tokens = env_tokens.split(",") if env_tokens else [
-            "AFd1xnHrJWKcjtriCyB5j3QL0bzbmLdcg1N1f5cJuSNVhteYjuOJz18Au6GIAT0tjHkw6fkUJKcarafV45b3c_gl7uT_o8HMcg==",
-            "AE37R_gte8WCEaytMalsIr9agWQRLuN8199RsVhU2WoRKRvcZ0eBTD8cFvnfUZh-GY0IvY-zjS3W9KWAmy3WDiWXbVvQRZyzMQ==",
-            "AE37R_jmAP-UgWNApkxwdlX5M2z1UBGuUzHZ63YWmRWeTjRJKxfSD1mzJ4joLnB11MHrBULuisjP-9I64LnBJDXyCc_CIJSCPg==",
-        ]
+        self.sandbox_tokens = env_tokens.split(",") if env_tokens else []
         self.health_log: Dict[str, List[Dict[str, Any]]] = {}
 
     async def dispatch_conversion_ping(
@@ -66,10 +61,13 @@ class ConversionSentryTool:
         url = PRODUCTION_URL if environment == "production" else SANDBOX_URL
         tokens = tokens if tokens is not None else (self.sandbox_tokens if environment == "sandbox" else [])
         if not tokens:
-            raise ValueError(
-                f"No conversion tokens to dispatch for environment '{environment}'. "
+            hint = (
                 "Production has no fixed test token -- pass the real captured rwg_token(s)."
+                if environment == "production" else
+                "Set GOOGLE_SANDBOX_TEST_TOKENS to your account's own Partner Portal sandbox "
+                "test tokens (Partner Portal -> conversion-tracking setup), or pass tokens= explicitly."
             )
+            raise ValueError(f"No conversion tokens to dispatch for environment '{environment}'. {hint}")
 
         partner_id = partner_id or os.getenv("GOOGLE_CONVERSION_PARTNER_ID")
         if not partner_id:

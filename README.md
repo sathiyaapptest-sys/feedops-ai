@@ -90,7 +90,7 @@ cp .env.example .env   # fill in GEMINI_API_KEY at minimum
 python run.py           # serves on http://localhost:8000, /docs for the API
 ```
 
-Optional env vars for features that degrade gracefully without them (mock/dry-run fallback, never a crash): `GOOGLE_PLACES_API_KEY`, `GOOGLE_SFTP_USERNAME` / `GOOGLE_SFTP_KEY_PATH`, `GOOGLE_CONVERSION_PARTNER_ID`, `GEMINI_MODEL` (defaults to `gemini-3.6-flash` — the `gemini-flash-latest` alias is unreliable in practice), `GEMMA_MODEL` (defaults to `gemma-4-26b-a4b-it`, used only for bulk-upload column matching — same `GEMINI_API_KEY`, no separate credential).
+Optional env vars for features that degrade gracefully without them (mock/dry-run fallback, never a crash): `GOOGLE_PLACES_API_KEY`, `GOOGLE_SFTP_USERNAME` / `GOOGLE_SFTP_KEY_PATH`, `GOOGLE_CONVERSION_PARTNER_ID`, `GOOGLE_SANDBOX_TEST_TOKENS` (comma-separated — your own account's Partner Portal sandbox test tokens; these are issued per-account by Google, never hardcode or share them), `GEMINI_MODEL` (defaults to `gemini-3.6-flash` — the `gemini-flash-latest` alias is unreliable in practice), `GEMMA_MODEL` (defaults to `gemma-4-26b-a4b-it`, used only for bulk-upload column matching — same `GEMINI_API_KEY`, no separate credential).
 
 SchemaAuditor / Ask FeedOps ground themselves in real RAG output automatically — `GOOGLE_ORDERING_REDIRECT_PLAYBOOK.md` is chunked and embedded into an in-memory index the first time a query needs it, no separate build step or Firestore vector index required. You just need the file present locally (see [Why the playbook isn't in this repo](#why-the-playbook-isnt-in-this-repo)) and a working `GEMINI_API_KEY`.
 

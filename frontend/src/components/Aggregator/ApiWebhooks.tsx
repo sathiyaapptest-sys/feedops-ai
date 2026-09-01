@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { auth } from '../../lib/firebase';
-import { KeyRound, Loader2, CheckCircle2, UtensilsCrossed, Eye, EyeOff, Shield, Copy, Check, RefreshCw, Key } from 'lucide-react';
+import { KeyRound, Loader2, CheckCircle2, UtensilsCrossed, Eye, EyeOff, Shield, Copy, Check, RefreshCw, Key, AlertTriangle } from 'lucide-react';
 
 interface ConfigForm {
   sftp_username_sandbox: string;
@@ -228,6 +228,16 @@ export function ApiWebhooks() {
           </p>
         </div>
 
+        <div className="flex items-start gap-2.5 p-3.5 bg-amber-50/70 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-lg">
+          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+            <strong className="font-semibold text-slate-800 dark:text-slate-200">These must be your own Partner Portal values.</strong>{' '}
+            Google doesn't issue shared or trial credentials for Ordering Redirect — every field below is tied to a real, individually-approved
+            partner account, so the placeholders shown here are inert demo values that won't actually reach Google. Feeds only get delivered and
+            conversion pings only get dispatched once you replace them with your own account's real SFTP username, Partner ID, and tokens.
+          </p>
+        </div>
+
         {loading ? (
           <div className="h-40 animate-pulse bg-slate-100 dark:bg-slate-700 rounded-lg" />
         ) : (
@@ -350,28 +360,43 @@ export function ApiWebhooks() {
                 </p>
               </div>
 
-              {/* Portal Status Sandbox */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium text-slate-900 dark:text-white">Portal Status (sandbox)</label>
-                <select
-                  value={form.portal_status_sandbox}
-                  onChange={(e) => setForm({ ...form, portal_status_sandbox: e.target.value })}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white capitalize"
-                >
-                  {PORTAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-                </select>
-              </div>
+            </div>
 
-              {/* Portal Status Production */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium text-slate-900 dark:text-white">Portal Status (production)</label>
-                <select
-                  value={form.portal_status_production}
-                  onChange={(e) => setForm({ ...form, portal_status_production: e.target.value })}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white capitalize"
-                >
-                  {PORTAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-                </select>
+            {/* Self-reported progress -- Google's Partner Portal has no status API, so unlike every
+                field above (real values Google issues you), these two are purely your own record of
+                where each environment stands. Grouped and visually distinct on purpose. */}
+            <div className="p-4 bg-indigo-50/70 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800/40 rounded-lg space-y-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">Your Self-Reported Progress</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Google's Partner Portal has no status API — these two fields aren't read from Google, they're
+                  your own record of where each environment stands. Update them yourself as you move through Portal setup.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Portal Status Sandbox */}
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-slate-900 dark:text-white">Portal Status (sandbox)</label>
+                  <select
+                    value={form.portal_status_sandbox}
+                    onChange={(e) => setForm({ ...form, portal_status_sandbox: e.target.value })}
+                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white capitalize"
+                  >
+                    {PORTAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+                  </select>
+                </div>
+
+                {/* Portal Status Production */}
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-slate-900 dark:text-white">Portal Status (production)</label>
+                  <select
+                    value={form.portal_status_production}
+                    onChange={(e) => setForm({ ...form, portal_status_production: e.target.value })}
+                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-white capitalize"
+                  >
+                    {PORTAL_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+                  </select>
+                </div>
               </div>
             </div>
 
