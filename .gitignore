@@ -31,3 +31,11 @@ feeds_output/
 # Internal working notes -- not for public/judge consumption
 WOW_FACTORS.md
 PROGRESS.md
+
+# docs/ holds internal video-production assets (chapter cards, badges, fonts,
+# raw video clips, credits page) alongside the one architecture diagram that's
+# actually referenced from the README. Ignore everything in docs/ except that
+# one file, rather than the other way around, so a new internal asset dropped
+# in here later doesn't need a matching .gitignore update to stay private.
+docs/*
+!docs/architecture-diagram 1.svg
