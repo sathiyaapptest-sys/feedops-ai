@@ -27,3 +27,7 @@ frontend/dist/
 # Build / runtime output
 feeds_output/
 *.log
+
+# Internal working notes -- not for public/judge consumption
+WOW_FACTORS.md
+PROGRESS.md
