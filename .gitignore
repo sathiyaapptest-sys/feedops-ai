@@ -28,14 +28,8 @@ frontend/dist/
 feeds_output/
 *.log
 
-# Internal working notes -- not for public/judge consumption
-WOW_FACTORS.md
-PROGRESS.md
-
-# docs/ holds internal video-production assets (chapter cards, badges, fonts,
-# raw video clips, credits page) alongside the one architecture diagram that's
-# actually referenced from the README. Ignore everything in docs/ except that
-# one file, rather than the other way around, so a new internal asset dropped
-# in here later doesn't need a matching .gitignore update to stay private.
-docs/*
-!docs/architecture-diagram 1.svg
+# Anything for internal use only (working notes, video-production assets,
+# scratch files) goes in here -- never in version control, no matter what
+# gets added to it later. docs/ stays public and holds only what's actually
+# referenced from the README.
+internals/
